@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from importlib.metadata import entry_points
 from typing import Optional
 
 import typer
 from rich.console import Console
+from rich.logging import RichHandler
 from rich.table import Table
 
 from quantilica_cli import __version__
@@ -95,9 +97,14 @@ def list_sources() -> None:
 
 def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    from quantilica_core.logging import configure_rich_logging
-    configure_rich_logging(verbose=False)
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(message)s",
+        datefmt="[%X]",
+        handlers=[RichHandler(rich_tracebacks=True, show_path=False)],
+        force=True,
+    )
     app()
 
 
