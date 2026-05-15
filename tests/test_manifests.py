@@ -10,7 +10,7 @@ from quantilica_core.dates import isoformat_utc, utc_now
 from quantilica_core.manifests import DownloadManifest, SourceMetadata
 from typer.testing import CliRunner
 
-from quantilica_cli.manifests import _parse_since, app, iter_manifests
+from quantilica_cli.manifests import app, iter_manifests, parse_since
 
 runner = CliRunner()
 
@@ -40,18 +40,18 @@ def write_manifest(
     return path
 
 
-# --- _parse_since -----------------------------------------------------------
+# --- parse_since -----------------------------------------------------------
 
 
 def test_parse_since_duration():
     before = utc_now() - timedelta(days=7, seconds=2)
     after = utc_now() - timedelta(days=7) + timedelta(seconds=2)
-    parsed = _parse_since("7d")
+    parsed = parse_since("7d")
     assert before < parsed < after
 
 
 def test_parse_since_iso_date():
-    parsed = _parse_since("2026-05-01")
+    parsed = parse_since("2026-05-01")
     assert parsed.year == 2026 and parsed.month == 5 and parsed.day == 1
 
 
@@ -59,7 +59,7 @@ def test_parse_since_invalid():
     import typer
 
     with pytest.raises(typer.BadParameter):
-        _parse_since("not-a-date")
+        parse_since("not-a-date")
 
 
 # --- iter_manifests ----------------------------------------------------------

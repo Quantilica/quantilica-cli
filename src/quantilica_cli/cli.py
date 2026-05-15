@@ -15,6 +15,7 @@ from quantilica_cli import __version__
 from quantilica_cli.manifests import app as manifests_app
 
 FETCHER_GROUP = "quantilica.fetchers"
+COMMAND_GROUP = "quantilica.commands"
 
 app = typer.Typer(
     name="quantilica",
@@ -31,9 +32,9 @@ app.add_typer(manifests_app, name="manifests")
 console = Console()
 
 
-def _load_plugins() -> dict[str, typer.Typer]:
+def _load_plugins(group: str) -> dict[str, typer.Typer]:
     plugins: dict[str, typer.Typer] = {}
-    for ep in entry_points(group=FETCHER_GROUP):
+    for ep in entry_points(group=group):
         try:
             plugins[ep.name] = ep.load()
         except Exception as exc:
@@ -44,8 +45,12 @@ def _load_plugins() -> dict[str, typer.Typer]:
 
 
 def _register_plugins() -> None:
-    for name, plugin_app in _load_plugins().items():
+    # Fetchers ficam sob `quantilica fetch <nome>`.
+    for name, plugin_app in _load_plugins(FETCHER_GROUP).items():
         fetch_app.add_typer(plugin_app, name=name)
+    # Comandos ficam na raiz: `quantilica <nome>`.
+    for name, plugin_app in _load_plugins(COMMAND_GROUP).items():
+        app.add_typer(plugin_app, name=name)
 
 
 _register_plugins()
@@ -74,7 +79,7 @@ def root_callback(
 @app.command("list-sources")
 def list_sources() -> None:
     """Lista todas as fontes de dados instaladas."""
-    plugins = _load_plugins()
+    plugins = _load_plugins(FETCHER_GROUP)
     if not plugins:
         console.print(
             "[yellow]Nenhum fetcher instalado.[/yellow] "

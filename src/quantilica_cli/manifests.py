@@ -46,7 +46,7 @@ _CADENCE = {
 _STALE_GRACE = 1.5
 
 
-def _parse_since(value: str) -> datetime:
+def parse_since(value: str) -> datetime:
     """Parse a relative duration ('7d', '24h') or ISO date into a UTC cutoff."""
     match = _DURATION_RE.match(value.strip().lower())
     if match:
@@ -153,7 +153,7 @@ def list_manifests(
     ] = None,
 ) -> None:
     """Lista manifestos de download encontrados sob o diretório raiz."""
-    cutoff = _parse_since(since) if since else None
+    cutoff = parse_since(since) if since else None
 
     rows: list[tuple[Path, dict[str, Any], datetime | None]] = []
     for path, data in iter_manifests(root):
