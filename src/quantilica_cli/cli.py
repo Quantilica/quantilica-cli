@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import sys
 from importlib.metadata import entry_points
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -13,6 +12,7 @@ from rich.logging import RichHandler
 from rich.table import Table
 
 from quantilica_cli import __version__
+from quantilica_cli.manifests import app as manifests_app
 
 FETCHER_GROUP = "quantilica.fetchers"
 
@@ -26,6 +26,7 @@ fetch_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(fetch_app, name="fetch")
+app.add_typer(manifests_app, name="manifests")
 
 console = Console()
 
@@ -58,7 +59,7 @@ def _version_callback(value: bool) -> None:
 
 @app.callback()
 def root_callback(
-    version: Optional[bool] = typer.Option(
+    version: bool | None = typer.Option(
         None,
         "--version",
         "-V",
