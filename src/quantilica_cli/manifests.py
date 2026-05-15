@@ -287,6 +287,21 @@ def status(
     console.print(table)
 
 
+def _expected_cadence(data: dict[str, Any]) -> str | None:
+    """Read the expected cadence from a manifest.
+
+    Prefers the v2 ``source_meta`` group, falling back to the free-form
+    ``metadata`` dict used by older manifests.
+    """
+    source_meta = data.get("source_meta")
+    if isinstance(source_meta, dict) and source_meta.get("expected_cadence"):
+        return source_meta["expected_cadence"]
+    metadata = data.get("metadata")
+    if isinstance(metadata, dict):
+        return metadata.get("expected_cadence")
+    return None
+
+
 def _staleness(
     entries: list[tuple[datetime | None, dict[str, Any]]],
     latest: datetime,
@@ -296,8 +311,7 @@ def _staleness(
     cadence: timedelta | None = None
     for dt, data in entries:
         if dt == latest:
-            raw = data.get("metadata", {})
-            name = raw.get("expected_cadence") if isinstance(raw, dict) else None
+            name = _expected_cadence(data)
             cadence = _CADENCE.get(str(name)) if name else None
             break
 

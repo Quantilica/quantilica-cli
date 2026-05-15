@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from quantilica_core.dates import isoformat_utc, utc_now
-from quantilica_core.manifests import DownloadManifest
+from quantilica_core.manifests import DownloadManifest, SourceMetadata
 from typer.testing import CliRunner
 
 from quantilica_cli.manifests import _parse_since, app, iter_manifests
@@ -160,6 +160,20 @@ def test_status_flags_stale_by_cadence(tmp_path: Path):
         dataset_id="diario",
         fetched_at=old,
         metadata={"expected_cadence": "daily"},
+    )
+    result = runner.invoke(app, ["status", "-r", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "atrasado" in result.stdout
+
+
+def test_status_flags_stale_by_source_meta_cadence(tmp_path: Path):
+    old = isoformat_utc(utc_now() - timedelta(days=10))
+    write_manifest(
+        tmp_path,
+        "daily.xlsx",
+        dataset_id="diario",
+        fetched_at=old,
+        source_meta=SourceMetadata(expected_cadence="daily"),
     )
     result = runner.invoke(app, ["status", "-r", str(tmp_path)])
     assert result.exit_code == 0
