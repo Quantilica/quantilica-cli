@@ -19,7 +19,7 @@ pip install comex-fetcher inmet-fetcher rtn-fetcher
 ```bash
 quantilica --help
 quantilica list-sources
-quantilica fetch comex sync 2024
-quantilica fetch inmet sync 2020 2021
-quantilica fetch td sync --dataset prices
+quantilica comex sync 2024
+quantilica inmet sync 2020 2021
+quantilica td sync --dataset prices
 ```
