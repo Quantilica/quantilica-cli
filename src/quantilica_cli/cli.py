@@ -22,11 +22,6 @@ app = typer.Typer(
     help="Quantilica — ferramentas de dados abertos brasileiros.",
     no_args_is_help=True,
 )
-fetch_app = typer.Typer(
-    help="Baixar dados de fontes suportadas.",
-    no_args_is_help=True,
-)
-app.add_typer(fetch_app, name="fetch")
 app.add_typer(manifests_app, name="manifests")
 
 console = Console()
@@ -45,10 +40,9 @@ def _load_plugins(group: str) -> dict[str, typer.Typer]:
 
 
 def _register_plugins() -> None:
-    # Fetchers ficam sob `quantilica fetch <nome>`.
+    # Fetchers e comandos ficam na raiz: `quantilica <nome>`.
     for name, plugin_app in _load_plugins(FETCHER_GROUP).items():
-        fetch_app.add_typer(plugin_app, name=name)
-    # Comandos ficam na raiz: `quantilica <nome>`.
+        app.add_typer(plugin_app, name=name)
     for name, plugin_app in _load_plugins(COMMAND_GROUP).items():
         app.add_typer(plugin_app, name=name)
 
@@ -96,7 +90,7 @@ def list_sources() -> None:
         description = ""
         if info and hasattr(info, "help") and info.help:
             description = info.help
-        table.add_row(f"quantilica fetch {name}", description)
+        table.add_row(f"quantilica {name}", description)
 
     console.print(table)
 
