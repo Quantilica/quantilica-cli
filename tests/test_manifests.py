@@ -6,11 +6,11 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from quantilica_core.dates import isoformat_utc, utc_now
-from quantilica_core.manifests import DownloadManifest, SourceMetadata
+from quantilica.core.dates import isoformat_utc, utc_now
+from quantilica.core.manifests import DownloadManifest, SourceMetadata
 from typer.testing import CliRunner
 
-from quantilica_cli.manifests import app, iter_manifests, parse_since
+from quantilica.cli.manifests import app, iter_manifests, parse_since
 
 runner = CliRunner()
 

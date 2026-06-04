@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.scripts]
-quantilica = "quantilica_cli.cli:main"
+quantilica = "quantilica.cli.cli:main"
 
 [dependency-groups]
 dev = ["ruff>=0.9.0", "pytest>=8.0.0"]
@@ -40,8 +40,11 @@ dev = ["ruff>=0.9.0", "pytest>=8.0.0"]
 [tool.hatch.metadata]
 allow-direct-references = true
 
+[tool.hatch.build]
+sources = ["src"]
+
 [tool.hatch.build.targets.wheel]
-packages = ["src/quantilica_cli"]
+packages = ["src/quantilica/cli"]
 
 [build-system]
 requires = ["hatchling"]

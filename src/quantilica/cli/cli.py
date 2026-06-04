@@ -11,8 +11,8 @@ from rich.console import Console
 from rich.logging import RichHandler
 from rich.table import Table
 
-from quantilica_cli import __version__
-from quantilica_cli.manifests import app as manifests_app
+from quantilica.cli import __version__
+from quantilica.cli.manifests import app as manifests_app
 
 FETCHER_GROUP = "quantilica.fetchers"
 COMMAND_GROUP = "quantilica.commands"

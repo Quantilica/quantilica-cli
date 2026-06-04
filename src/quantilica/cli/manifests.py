@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer
-from quantilica_core.dates import parse_iso_datetime, utc_now
+from quantilica.core.dates import parse_iso_datetime, utc_now
 from rich.console import Console
 from rich.table import Table
 
