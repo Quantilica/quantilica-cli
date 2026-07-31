@@ -19,7 +19,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    "quantilica-core[cli] @ git+https://github.com/Quantilica/quantilica-core.git",
+    "quantilica-core[cli]>=0.3.2",
 ]
 
 [project.scripts]
@@ -53,3 +53,14 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["-p", "no:cacheprovider"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/quantilica/cli/sources.py" = ["E501"]
+"src/quantilica/cli/cli.py" = ["E501"]
+"tests/*" = ["E501"]

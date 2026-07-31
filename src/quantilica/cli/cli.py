@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import sys
 from importlib.metadata import entry_points
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -13,6 +14,15 @@ from rich.table import Table
 
 from quantilica.cli import __version__
 from quantilica.cli.manifests import app as manifests_app
+from quantilica.cli.sources import (
+    app as sources_app,
+)
+from quantilica.cli.sources import (
+    cmd_doctor,
+    cmd_install,
+    cmd_uninstall,
+    fetch_remote_sources,
+)
 
 FETCHER_GROUP = "quantilica.fetchers"
 COMMAND_GROUP = "quantilica.commands"
@@ -23,6 +33,12 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(manifests_app, name="manifests")
+app.add_typer(sources_app, name="sources")
+
+# Adiciona comandos top-level install, uninstall e doctor
+app.command("install")(cmd_install)
+app.command("uninstall")(cmd_uninstall)
+app.command("doctor")(cmd_doctor)
 
 console = Console()
 
@@ -71,17 +87,43 @@ def root_callback(
 
 
 @app.command("list-sources")
-def list_sources() -> None:
-    """Lista todas as fontes de dados instaladas."""
+def list_sources(
+    remote: Annotated[
+        bool,
+        typer.Option(
+            "--remote", help="Exibe todas as fontes conhecidas no registro remoto"
+        ),
+    ] = False,
+) -> None:
+    """Lista as fontes de dados instaladas ou disponíveis no repositório."""
     plugins = _load_plugins(FETCHER_GROUP)
+
+    if remote:
+        remote_registry = fetch_remote_sources()
+        table = Table(title="Todas as fontes de dados conhecidas", show_header=True)
+        table.add_column("Fonte", style="cyan")
+        table.add_column("Pacote", style="magenta")
+        table.add_column("Status", style="green")
+
+        for name, dist in sorted(remote_registry.items()):
+            status = (
+                "[green]Instalado[/green]"
+                if name in plugins
+                else "[dim]Não instalado[/dim]"
+            )
+            table.add_row(name, dist, status)
+
+        console.print(table)
+        return
+
     if not plugins:
         console.print(
-            "[yellow]Nenhum fetcher instalado.[/yellow] "
-            "Instale um fetcher e tente novamente."
+            "[yellow]Nenhum fetcher instalado.[/yellow]\n"
+            "Use 'quantilica install <fonte>' para instalar um fetcher (ex: quantilica install comex)."
         )
         return
 
-    table = Table(title="Fontes disponíveis", show_header=True)
+    table = Table(title="Fontes instaladas", show_header=True)
     table.add_column("Comando", style="cyan")
     table.add_column("Descrição", style="green")
 
