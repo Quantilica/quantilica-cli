@@ -13,13 +13,13 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer
-from rich.console import Console, Group
-from rich.live import Live
-from rich.table import Table
-
 from quantilica.core.exceptions import FetchError
 from quantilica.core.http import HttpClient, HttpStatusError, ProgressCallback
 from quantilica.core.logging import get_logger
+from rich.console import Group
+from rich.live import Live
+from rich.table import Table
+
 from quantilica.cli.ui import (
     ProgressPool,
     get_console,
@@ -69,12 +69,14 @@ class FetcherApp:
         self.aliases = aliases_dict
         self.list_datasets = list_datasets
         self.path_builder = path_builder
-        self.default_output = default_output or Path(f"/data/{name.replace('-fetcher', '')}")
+        self.default_output = default_output or Path(
+            f"/data/{name.replace('-fetcher', '')}"
+        )
         self.client = client or default_client()
-        
+
         self.all_group_keys = list(self.groups.keys())
         self.all_keys = self.all_group_keys + list(self.aliases.keys())
-        
+
         # O objeto typer principal
         self.app = typer.Typer(help=help)
         self._build_commands()
@@ -121,7 +123,9 @@ class FetcherApp:
                 if url != entry["url"]:
                     actual_ext = url.split(".")[-1]
                     if "ext" in entry and output.name.endswith(f".{entry['ext']}"):
-                        new_name = output.name[: -(len(entry["ext"]) + 1)] + f".{actual_ext}"
+                        new_name = (
+                            output.name[: -(len(entry["ext"]) + 1)] + f".{actual_ext}"
+                        )
                         output = output.with_name(new_name)
 
                 if dry_run:
@@ -151,7 +155,9 @@ class FetcherApp:
         def sync(
             groups: Annotated[
                 list[str] | None,
-                typer.Argument(help="Grupos a baixar. Use 'list' para ver grupos disponíveis. Padrão: todos."),
+                typer.Argument(
+                    help="Grupos a baixar. Use 'list' para ver grupos disponíveis. Padrão: todos."
+                ),
             ] = None,
             output: Annotated[
                 Path | None, typer.Option("-o", "--output", help="Diretório de saída")
@@ -159,8 +165,12 @@ class FetcherApp:
             dry_run: Annotated[
                 bool, typer.Option("--dry-run", help="Listar arquivos sem baixar")
             ] = False,
-            workers: Annotated[int, typer.Option("--workers", help="Downloads paralelos")] = 4,
-            verbose: Annotated[bool, typer.Option("--verbose", help="Logs detalhados")] = False,
+            workers: Annotated[
+                int, typer.Option("--workers", help="Downloads paralelos")
+            ] = 4,
+            verbose: Annotated[
+                bool, typer.Option("--verbose", help="Logs detalhados")
+            ] = False,
         ) -> None:
             setup_rich_logging(verbose, console=console)
             actual_output = output or self.default_output
@@ -207,8 +217,14 @@ class FetcherApp:
 
             with graceful_executor(max_workers=workers) as executor:
                 try:
-                    with Live(Group(overall, file_prog), console=console, refresh_per_second=10):
-                        futures = {executor.submit(_worker, entry): entry for entry in entries}
+                    with Live(
+                        Group(overall, file_prog),
+                        console=console,
+                        refresh_per_second=10,
+                    ):
+                        futures = {
+                            executor.submit(_worker, entry): entry for entry in entries
+                        }
                         for future in concurrent.futures.as_completed(futures):
                             overall.update(overall_task, advance=1)
                             if future.result():
@@ -217,7 +233,9 @@ class FetcherApp:
                     console.print("\n[yellow]Interrompido.[/yellow]")
                     raise typer.Exit(130) from None
 
-            console.print(f"\n[green]Concluído:[/green] {downloaded}/{total} arquivo(s) baixado(s).")
+            console.print(
+                f"\n[green]Concluído:[/green] {downloaded}/{total} arquivo(s) baixado(s)."
+            )
             if errors:
                 console.print(f"[red]{len(errors)} erro(s):[/red]")
                 for eid, emsg in errors:
@@ -225,13 +243,18 @@ class FetcherApp:
 
         @self.app.command("list")
         def cmd_list(
-            verbose: Annotated[bool, typer.Option("--verbose", help="Logs detalhados")] = False,
+            verbose: Annotated[
+                bool, typer.Option("--verbose", help="Logs detalhados")
+            ] = False,
         ) -> None:
             setup_rich_logging(verbose, console=console)
 
             for group_id, group_info in self.groups.items():
                 table = Table(
-                    "ID", "Partição", "Extensão", "URL",
+                    "ID",
+                    "Partição",
+                    "Extensão",
+                    "URL",
                     title=f"[bold]{group_id}[/bold] — {group_info.get('name', '')}",
                 )
                 for entry in self.list_datasets(group_id):
@@ -243,7 +266,12 @@ class FetcherApp:
                         partition = str(entry["year"])
                     else:
                         partition = "—"
-                    table.add_row(entry.get("id", ""), partition, entry.get("ext", ""), entry.get("url", ""))
+                    table.add_row(
+                        entry.get("id", ""),
+                        partition,
+                        entry.get("ext", ""),
+                        entry.get("url", ""),
+                    )
                 console.print(table)
 
             total = sum(len(self.list_datasets(g)) for g in self.all_group_keys)

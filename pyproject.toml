@@ -1,6 +1,6 @@
 [project]
 name = "quantilica-cli"
-version = "0.2.0"
+version = "0.2.2"
 description = "Unified CLI for Quantilica open data fetchers"
 readme = "README.md"
 authors = [{ name = "Komesu, D.K.", email = "daniel@dkko.me" }]
@@ -19,7 +19,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    "quantilica-core>=0.3.2",
+    "quantilica-core>=0.4.0",
     "rich>=13.0.0",
     "typer>=0.15.0",
 ]
@@ -65,4 +65,5 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.ruff.lint.per-file-ignores]
 "src/quantilica/cli/sources.py" = ["E501"]
 "src/quantilica/cli/cli.py" = ["E501"]
+"src/quantilica/cli/sdk.py" = ["E501"]
 "tests/*" = ["E501"]
