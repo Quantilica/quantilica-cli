@@ -14,6 +14,7 @@ from typing import Annotated, Any
 
 import typer
 from quantilica.core.exceptions import FetchError
+from quantilica.core.ftp import FtpClient
 from quantilica.core.http import HttpClient, HttpStatusError, ProgressCallback
 from quantilica.core.logging import get_logger
 from rich.console import Group
@@ -61,7 +62,7 @@ class FetcherApp:
         list_datasets: Callable[[str], list[dict[str, Any]]],
         path_builder: Callable[[Path, dict[str, Any], dt.date | None], Path],
         default_output: Path | None = None,
-        client: HttpClient | None = None,
+        client: HttpClient | FtpClient | None = None,
     ):
         self.name = name
         self.help = help
