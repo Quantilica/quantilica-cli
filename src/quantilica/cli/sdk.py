@@ -149,6 +149,56 @@ class FetcherApp:
             return [key]
         return []
 
+    def download_datasets(
+        self,
+        entries: list[dict[str, Any]],
+        output_dir: Path,
+        workers: int = 4,
+    ) -> tuple[int, int, list[tuple[str, str]]]:
+        """
+        Executes parallel download for a list of dataset entries.
+        Returns a tuple: (downloaded_count, total_count, errors_list).
+        """
+        console = get_console()
+        total = len(entries)
+        overall = make_batch_progress(console)
+        file_prog = make_download_progress(console)
+        overall_task = overall.add_task("[cyan]Baixando...[/cyan]", total=total)
+
+        downloaded = 0
+        errors: list[tuple[str, str]] = []
+        pool = ProgressPool(workers=workers, file_prog=file_prog)
+
+        def _worker(entry: dict[str, Any]) -> bool:
+            try:
+                eid = entry.get("id", "unknown")
+                with pool.acquire(description=f"[cyan]{eid}[/cyan]") as cb:
+                    self.download_entry(entry, output_dir, progress=cb)
+                    return True
+            except Exception as exc:
+                errors.append((entry.get("id", "unknown"), str(exc)))
+                return False
+
+        with graceful_executor(max_workers=workers) as executor:
+            try:
+                with Live(
+                    Group(overall, file_prog),
+                    console=console,
+                    refresh_per_second=10,
+                ):
+                    futures = {
+                        executor.submit(_worker, entry): entry for entry in entries
+                    }
+                    for future in concurrent.futures.as_completed(futures):
+                        overall.update(overall_task, advance=1)
+                        if future.result():
+                            downloaded += 1
+            except KeyboardInterrupt:
+                console.print("\n[yellow]Interrompido.[/yellow]")
+                raise typer.Exit(130) from None
+
+        return downloaded, total, errors
+
     def _build_commands(self) -> None:
         console = get_console()
 
@@ -188,51 +238,18 @@ class FetcherApp:
                         target_groups.append(canon)
 
             entries = [e for g in target_groups for e in self.list_datasets(g)]
-            total = len(entries)
 
             if dry_run:
                 table = Table("Grupo", "ID", "URL", title="Arquivos a baixar (dry-run)")
                 for e in entries:
                     table.add_row(e.get("group", ""), e.get("id", ""), e.get("url", ""))
                 console.print(table)
-                console.print(f"\n[bold]{total}[/bold] arquivo(s) listado(s).")
+                console.print(f"\n[bold]{len(entries)}[/bold] arquivo(s) listado(s).")
                 return
 
-            overall = make_batch_progress(console)
-            file_prog = make_download_progress(console)
-            overall_task = overall.add_task("[cyan]Baixando...[/cyan]", total=total)
-
-            downloaded = 0
-            errors: list[tuple[str, str]] = []
-            pool = ProgressPool(workers=workers, file_prog=file_prog)
-
-            def _worker(entry: dict[str, Any]) -> bool:
-                try:
-                    eid = entry.get("id", "unknown")
-                    with pool.acquire(description=f"[cyan]{eid}[/cyan]") as cb:
-                        self.download_entry(entry, actual_output, progress=cb)
-                        return True
-                except Exception as exc:
-                    errors.append((entry.get("id", "unknown"), str(exc)))
-                    return False
-
-            with graceful_executor(max_workers=workers) as executor:
-                try:
-                    with Live(
-                        Group(overall, file_prog),
-                        console=console,
-                        refresh_per_second=10,
-                    ):
-                        futures = {
-                            executor.submit(_worker, entry): entry for entry in entries
-                        }
-                        for future in concurrent.futures.as_completed(futures):
-                            overall.update(overall_task, advance=1)
-                            if future.result():
-                                downloaded += 1
-                except KeyboardInterrupt:
-                    console.print("\n[yellow]Interrompido.[/yellow]")
-                    raise typer.Exit(130) from None
+            downloaded, total, errors = self.download_datasets(
+                entries, actual_output, workers=workers
+            )
 
             console.print(
                 f"\n[green]Concluído:[/green] {downloaded}/{total} arquivo(s) baixado(s)."
