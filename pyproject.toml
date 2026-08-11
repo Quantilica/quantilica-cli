@@ -1,10 +1,11 @@
 [project]
 name = "quantilica-cli"
-version = "0.2.2"
+version = "0.3.0"
 description = "Unified CLI for Quantilica open data fetchers"
 readme = "README.md"
 authors = [{ name = "Komesu, D.K.", email = "daniel@dkko.me" }]
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 keywords = ["quantilica", "cli", "open-data", "brazil"]
 classifiers = [
@@ -12,7 +13,7 @@ classifiers = [
     "Environment :: Console",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "Typing :: Typed",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
@@ -39,8 +40,8 @@ dev = ["ruff>=0.9.0", "pytest>=8.0.0"]
 # cd quantilica-cli && uv pip install -e ../quantilica-core (sem [tool.uv.sources])
 # Em produção, quantilica-core é instalado via git+https (declarado em dependencies).
 
-[tool.hatch.metadata]
-allow-direct-references = true
+# [tool.hatch.metadata]
+# allow-direct-references = true
 
 [tool.hatch.build]
 sources = ["src"]
@@ -49,7 +50,7 @@ sources = ["src"]
 packages = ["src/quantilica/cli"]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
