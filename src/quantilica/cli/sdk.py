@@ -34,6 +34,11 @@ logger = get_logger(__name__)
 
 
 def default_client() -> HttpClient:
+    """Create a default HttpClient with standard configuration.
+
+    Returns:
+        A pre-configured HttpClient instance.
+    """
     return HttpClient(
         timeout=180.0,
         verify=True,
@@ -50,7 +55,18 @@ def default_client() -> HttpClient:
 
 
 class FetcherApp:
-    """Standard orchestrator for Quantilica fetchers."""
+    """Standard orchestrator for Quantilica fetchers.
+
+    Args:
+        name: Name of the fetcher (e.g., 'comex-fetcher').
+        help: Help text for the CLI.
+        groups_dict: Dictionary of dataset groups and their metadata.
+        aliases_dict: Dictionary of alias mappings to dataset groups.
+        list_datasets: Callback to list datasets given a group ID.
+        path_builder: Callback to build the destination path.
+        default_output: Default output directory path.
+        client: HTTP or FTP client instance. Defaults to default_client().
+    """
 
     def __init__(
         self,
@@ -108,7 +124,21 @@ class FetcherApp:
         dry_run: bool = False,
         progress: ProgressCallback | None = None,
     ) -> Path:
-        """Download one dataset entry and return the destination path."""
+        """Download one dataset entry and return the destination path.
+
+        Args:
+            entry: Dictionary containing dataset metadata (url, id, etc).
+            output_dir: Destination directory.
+            dry_run: If True, computes the destination path without downloading.
+            progress: Optional callback to track download progress.
+
+        Returns:
+            The local path where the file was (or would be) saved.
+
+        Raises:
+            FetchError: If no valid URLs could be downloaded.
+            HttpStatusError: On non-404 HTTP errors.
+        """
         urls_to_try = [entry["url"]]
         if "fallback_urls" in entry and entry["fallback_urls"]:
             urls_to_try.extend(entry["fallback_urls"])
@@ -155,9 +185,18 @@ class FetcherApp:
         output_dir: Path,
         workers: int = 4,
     ) -> tuple[int, int, list[tuple[str, str]]]:
-        """
-        Executes parallel download for a list of dataset entries.
-        Returns a tuple: (downloaded_count, total_count, errors_list).
+        """Executes parallel download for a list of dataset entries.
+
+        Args:
+            entries: List of dataset entries to download.
+            output_dir: The target base directory for downloads.
+            workers: Maximum number of parallel downloads.
+
+        Returns:
+            A tuple containing:
+            - downloaded_count: Number of successfully downloaded files.
+            - total_count: Total number of files attempted.
+            - errors_list: A list of tuples containing the dataset ID and the error message.
         """
         console = get_console()
         total = len(entries)

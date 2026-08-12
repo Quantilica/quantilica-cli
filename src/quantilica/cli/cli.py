@@ -138,6 +138,7 @@ def list_sources(
 
 
 def main() -> None:
+    """Main entry point for the quantilica CLI."""
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore
     logging.basicConfig(

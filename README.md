@@ -1,6 +1,7 @@
 # quantilica-cli
 
 CLI unificada para o ecossistema Quantilica de dados abertos brasileiros.
+For full documentation, please visit [https://docs.quantilica.com](https://docs.quantilica.com).
 
 ## Instalação
 

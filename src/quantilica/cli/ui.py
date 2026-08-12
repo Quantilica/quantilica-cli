@@ -38,7 +38,11 @@ _console: Console | None = None
 
 
 def get_console() -> Console:
-    """Return a process-wide shared Rich console."""
+    """Return a process-wide shared Rich console.
+
+    Returns:
+        The shared Rich Console instance.
+    """
     global _console
     if _console is None:
         _console = Console()
@@ -53,6 +57,10 @@ def setup_rich_logging(
     """Configure logging via ``RichHandler`` without breaking progress bars.
 
     ``verbose=False`` → WARNING only; ``verbose=True`` → DEBUG.
+
+    Args:
+        verbose: Whether to enable verbose logging.
+        console: Optional Rich Console to use for logging.
     """
     level = logging.DEBUG if verbose else logging.WARNING
     logging.basicConfig(
@@ -65,7 +73,14 @@ def setup_rich_logging(
 
 
 def make_batch_progress(console: Console | None = None) -> Progress:
-    """Build a Progress for overall/batch tracking (file counts)."""
+    """Build a Progress for overall/batch tracking (file counts).
+
+    Args:
+        console: Optional Rich Console to use.
+
+    Returns:
+        A Rich Progress instance configured for batch tracking.
+    """
     return Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -78,7 +93,14 @@ def make_batch_progress(console: Console | None = None) -> Progress:
 
 
 def make_download_progress(console: Console | None = None) -> Progress:
-    """Build a Progress for individual file downloads (bytes/speed)."""
+    """Build a Progress for individual file downloads (bytes/speed).
+
+    Args:
+        console: Optional Rich Console to use.
+
+    Returns:
+        A Rich Progress instance configured for individual file downloads.
+    """
     return Progress(
         SpinnerColumn(),
         TextColumn("[dim]{task.description}[/dim]"),
@@ -99,6 +121,14 @@ def expand_years_cli(
 
     If ``years`` is empty and ``default_range`` is provided, it expands the
     default range. Prints a warning to the console/stderr for any invalid specs.
+
+    Args:
+        years: List of year strings or ranges to expand.
+        default_range: A default range to use if years is empty.
+        console: Optional Rich Console for printing warnings.
+
+    Returns:
+        A list of expanded year integers.
     """
     from quantilica.core.dates import expand_year_range
 
@@ -114,7 +144,12 @@ def expand_years_cli(
 
 
 class ProgressPool:
-    """Manages a fixed pool of rich progress bars for concurrent workers."""
+    """Manages a fixed pool of rich progress bars for concurrent workers.
+
+    Args:
+        workers: The number of progress bar tasks to initialize.
+        file_prog: The Rich Progress instance to add tasks to.
+    """
 
     def __init__(self, workers: int, file_prog: Progress):
         self.lock = threading.Lock()
@@ -127,6 +162,14 @@ class ProgressPool:
     def acquire(
         self, description: str
     ) -> Generator[Callable[[int, int], None], None, None]:
+        """Acquires a progress bar task and returns an update callback.
+
+        Args:
+            description: The description to show for this task.
+
+        Yields:
+            A callback function to update progress with downloaded and total bytes.
+        """
         with self.lock:
             task_id = self.available.pop(0)
         self.file_prog.update(task_id, description=description, completed=0, total=None)
@@ -154,7 +197,14 @@ class ProgressPool:
 def graceful_executor(
     max_workers: int,
 ) -> Generator[concurrent.futures.ThreadPoolExecutor, None, None]:
-    """ThreadPoolExecutor that cancels futures and shuts down on KeyboardInterrupt."""
+    """ThreadPoolExecutor that cancels futures and shuts down on KeyboardInterrupt.
+
+    Args:
+        max_workers: Maximum number of threads in the pool.
+
+    Yields:
+        A thread pool executor instance.
+    """
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
     # Python 3.9+ supports cancel_futures=True, which automatically
     # cancels pending futures during shutdown.

@@ -40,7 +40,11 @@ SOURCES_REGISTRY: dict[str, str] = {
 
 
 def get_config_dir() -> Path:
-    """Retorna o diretório de configuração do quantilica-cli."""
+    """Retorna o diretório de configuração do quantilica-cli.
+
+    Returns:
+        O caminho do diretório de configuração.
+    """
     custom = os.environ.get("QUANTILICA_CONFIG_DIR")
     if custom:
         return Path(custom)
@@ -48,12 +52,20 @@ def get_config_dir() -> Path:
 
 
 def get_state_file() -> Path:
-    """Retorna o caminho para o arquivo de estado local."""
+    """Retorna o caminho para o arquivo de estado local.
+
+    Returns:
+        O caminho para o arquivo de estado `state.toml`.
+    """
     return get_config_dir() / "state.toml"
 
 
 def load_state() -> dict[str, Any]:
-    """Lê o arquivo de estado em ~/.config/quantilica/state.toml."""
+    """Lê o arquivo de estado em ~/.config/quantilica/state.toml.
+
+    Returns:
+        Um dicionário contendo o estado carregado.
+    """
     state_file = get_state_file()
     if not state_file.exists():
         return {"installed": {}}
@@ -71,7 +83,11 @@ def load_state() -> dict[str, Any]:
 
 
 def save_state(state: dict[str, Any]) -> None:
-    """Salva o arquivo de estado em ~/.config/quantilica/state.toml."""
+    """Salva o arquivo de estado em ~/.config/quantilica/state.toml.
+
+    Args:
+        state: O dicionário de estado a ser salvo.
+    """
     config_dir = get_config_dir()
     config_dir.mkdir(parents=True, exist_ok=True)
     state_file = get_state_file()
@@ -85,18 +101,34 @@ def save_state(state: dict[str, Any]) -> None:
 
 
 def get_installed_entry_points() -> set[str]:
-    """Retorna o conjunto de nomes de entry points de fetchers atualmente instalados."""
+    """Retorna o conjunto de nomes de entry points de fetchers atualmente instalados.
+
+    Returns:
+        Um conjunto de nomes de entry points.
+    """
     eps = entry_points(group=FETCHER_GROUP)
     return {ep.name for ep in eps}
 
 
 def get_index_url() -> str:
-    """Retorna a URL do índice pip customizado ou default."""
+    """Retorna a URL do índice pip customizado ou default.
+
+    Returns:
+        A URL do índice pip.
+    """
     return os.environ.get("QUANTILICA_INDEX_URL", DEFAULT_INDEX_URL)
 
 
 def install_package(dist_name: str, index_url: str | None = None) -> None:
-    """Instala um pacote Python usando uv pip install se disponível, ou pip."""
+    """Instala um pacote Python usando uv pip install se disponível, ou pip.
+
+    Args:
+        dist_name: Nome do pacote a instalar.
+        index_url: URL do índice pip. Padrão para a URL do índice global se não especificada.
+
+    Raises:
+        RuntimeError: Se a instalação falhar.
+    """
     idx = index_url or get_index_url()
 
     # Prepara o ambiente garantindo que VIRTUAL_ENV aponte para o ambiente atual
@@ -135,7 +167,14 @@ def install_package(dist_name: str, index_url: str | None = None) -> None:
 
 
 def uninstall_package(dist_name: str) -> None:
-    """Desinstala um pacote Python usando uv pip uninstall se disponível, ou pip."""
+    """Desinstala um pacote Python usando uv pip uninstall se disponível, ou pip.
+
+    Args:
+        dist_name: Nome do pacote a desinstalar.
+
+    Raises:
+        RuntimeError: Se a desinstalação falhar.
+    """
     env = os.environ.copy()
     venv_dir = str(Path(sys.executable).parent.parent)
     env["VIRTUAL_ENV"] = venv_dir
@@ -154,7 +193,11 @@ def uninstall_package(dist_name: str) -> None:
 
 
 def fetch_remote_sources() -> dict[str, str]:
-    """Obtém a lista remota de fontes disponíveis do arquivo sources.json do índice."""
+    """Obtém a lista remota de fontes disponíveis do arquivo sources.json do índice.
+
+    Returns:
+        Um dicionário mapeando os nomes das fontes para os nomes das distribuições.
+    """
     index_url = get_index_url()
     # Converte simple/ index url para URL base de sources.json
     base_url = index_url.rstrip("/")
@@ -178,7 +221,11 @@ def fetch_remote_sources() -> dict[str, str]:
 
 
 def reexec_cli(args: list[str]) -> None:
-    """Recarrega o processo CLI com os novos entry points instalados."""
+    """Recarrega o processo CLI com os novos entry points instalados.
+
+    Args:
+        args: Argumentos a serem passados para a nova execução da CLI.
+    """
     if sys.platform == "win32":
         code = subprocess.call([sys.executable, "-m", "quantilica.cli.cli", *args])
         sys.exit(code)

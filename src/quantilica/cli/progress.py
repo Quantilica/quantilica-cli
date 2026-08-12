@@ -21,6 +21,14 @@ def file_progress(
 
     Designed for use with HttpClient.download_with_manifest(progress=...).
     ``total`` is the expected file size in bytes; pass 0 when unknown.
+
+    Args:
+        description: The text description to show on the progress bar.
+        total: Expected file size in bytes. Defaults to 0.
+        leave: Whether to leave the progress bar upon completion. Defaults to False.
+
+    Yields:
+        A callback function to update progress.
     """
     pbar: tqdm[int] = tqdm(
         total=total or None,
@@ -56,6 +64,14 @@ def batch_progress(
     *,
     total: int,
 ) -> Generator[tqdm[int], None, None]:
-    """Context manager for tracking overall batch progress (file count)."""
+    """Context manager for tracking overall batch progress (file count).
+
+    Args:
+        description: The text description for the batch progress.
+        total: Total number of files/items to track.
+
+    Yields:
+        A tqdm progress bar instance.
+    """
     with tqdm(total=total, desc=description, unit="arquivo", leave=True) as pbar:
         yield pbar

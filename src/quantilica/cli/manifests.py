@@ -47,7 +47,17 @@ _STALE_GRACE = 1.5
 
 
 def parse_since(value: str) -> datetime:
-    """Parse a relative duration ('7d', '24h') or ISO date into a UTC cutoff."""
+    """Parse a relative duration ('7d', '24h') or ISO date into a UTC cutoff.
+
+    Args:
+        value: The string duration or ISO date to parse.
+
+    Returns:
+        The computed UTC cutoff datetime.
+
+    Raises:
+        typer.BadParameter: If the value is neither a valid duration nor an ISO date.
+    """
     match = _DURATION_RE.match(value.strip().lower())
     if match:
         amount, unit = int(match.group(1)), match.group(2)
@@ -101,6 +111,12 @@ def iter_manifests(root: Path) -> Iterator[tuple[Path, dict[str, Any]]]:
     """Yield ``(manifest_path, data)`` for every manifest found under ``root``.
 
     Malformed JSON files are skipped with a warning rather than aborting.
+
+    Args:
+        root: The root directory to search for manifests.
+
+    Yields:
+        A tuple containing the path to the manifest and its parsed JSON data.
     """
     for path in sorted(root.glob(MANIFEST_GLOB)):
         if not path.is_file():
