@@ -233,6 +233,11 @@ def reexec_cli(args: list[str]) -> None:
         os.execv(sys.executable, [sys.executable, "-m", "quantilica.cli.cli", *args])
 
 
+def _merged_registry() -> dict[str, str]:
+    """Combina o registro remoto (sources.json) com o local; o local tem precedência."""
+    return {**fetch_remote_sources(), **SOURCES_REGISTRY}
+
+
 @app.command("install")
 def cmd_install(
     source: str = typer.Argument(
@@ -243,7 +248,7 @@ def cmd_install(
     ),
 ) -> None:
     """Instala uma fonte de dados (fetcher) sob demanda."""
-    registry = SOURCES_REGISTRY
+    registry = _merged_registry()
     dist_name = registry.get(source, source)
 
     installed_eps = get_installed_entry_points()
@@ -289,7 +294,7 @@ def cmd_uninstall(
     ),
 ) -> None:
     """Desinstala uma fonte de dados (fetcher)."""
-    registry = SOURCES_REGISTRY
+    registry = _merged_registry()
     dist_name = registry.get(source, source)
 
     try:
