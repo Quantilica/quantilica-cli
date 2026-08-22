@@ -22,7 +22,7 @@ app = typer.Typer(
 console = Console()
 
 FETCHER_GROUP = "quantilica.fetchers"
-DEFAULT_INDEX_URL = "https://quantilica.com/quantilica-index/simple/"
+DEFAULT_INDEX_URL = "https://index.quantilica.com/simple/"
 
 # Mapeamento estático padrão de comandos CLI para nome das distribuições
 SOURCES_REGISTRY: dict[str, str] = {
