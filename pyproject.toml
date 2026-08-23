@@ -1,6 +1,6 @@
 [project]
 name = "quantilica-cli"
-version = "0.3.1"
+version = "0.3.2"
 description = "Unified CLI for Quantilica open data fetchers"
 readme = "README.md"
 authors = [{ name = "Komesu, D.K.", email = "daniel@dkko.me" }]
@@ -43,11 +43,9 @@ dev = ["ruff>=0.9.0", "pytest>=8.0.0"]
 # [tool.hatch.metadata]
 # allow-direct-references = true
 
-[tool.hatch.build]
-sources = ["src"]
-
 [tool.hatch.build.targets.wheel]
-packages = ["src/quantilica/cli"]
+sources = ["src"]
+packages = ["src/quantilica"]
 
 [build-system]
 requires = ["hatchling>=1.27"]
