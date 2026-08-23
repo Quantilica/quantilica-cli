@@ -1,6 +1,6 @@
 [project]
 name = "quantilica-cli"
-version = "0.3.0"
+version = "0.3.1"
 description = "Unified CLI for Quantilica open data fetchers"
 readme = "README.md"
 authors = [{ name = "Komesu, D.K.", email = "daniel@dkko.me" }]
@@ -38,7 +38,7 @@ dev = ["ruff>=0.9.0", "pytest>=8.0.0"]
 
 # Para desenvolvimento local do quantilica-core em conjunto com o CLI:
 # cd quantilica-cli && uv pip install -e ../quantilica-core (sem [tool.uv.sources])
-# Em produção, quantilica-core é instalado via git+https (declarado em dependencies).
+# Em produção, quantilica-core resolve pelo PyPI (pin de registro em dependencies).
 
 # [tool.hatch.metadata]
 # allow-direct-references = true
