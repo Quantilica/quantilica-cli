@@ -8,6 +8,7 @@ from __future__ import annotations
 import concurrent.futures
 import contextlib
 import datetime as dt
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any
@@ -37,20 +38,14 @@ def default_client() -> HttpClient:
     """Create a default HttpClient with standard configuration.
 
     Returns:
-        A pre-configured HttpClient instance.
+        A pre-configured HttpClient instance (browser-like WAF headers + pooling).
     """
     return HttpClient(
         timeout=180.0,
         verify=True,
         attempts=5,
         retry_base_delay=2.0,
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/142.0.0.0 Safari/537.36"
-            ),
-        },
+        emulate_browser=True,
     )
 
 
@@ -208,7 +203,35 @@ class FetcherApp:
         errors: list[tuple[str, str]] = []
         pool = ProgressPool(workers=workers, file_prog=file_prog)
 
+        # Pooling por worker: cada thread mantém seu HttpClient com keep-alive.
+        thread_local = threading.local()
+        _worker_clients: list[HttpClient] = []
+
+        def _get_worker_client() -> HttpClient | FtpClient:
+            if isinstance(self.client, FtpClient):
+                return self.client
+            if not hasattr(thread_local, "client"):
+                # Reusa config do client canônico, mas com sessão persistente.
+                c = HttpClient(
+                    timeout=self.client.timeout,
+                    headers=dict(self.client.headers),
+                    follow_redirects=self.client.follow_redirects,
+                    attempts=self.client.attempts,
+                    retry_base_delay=self.client.retry_base_delay,
+                    verify=self.client.verify,
+                    limits=self.client.limits,
+                    emulate_browser=True,
+                )
+                c.__enter__()
+                thread_local.client = c
+                _worker_clients.append(c)
+            return thread_local.client  # type: ignore[return-value]
+
         def _worker(entry: dict[str, Any]) -> bool:
+            # Troca temporária do client para o da thread (com pooling).
+            worker_client = _get_worker_client()
+            prev = self.client
+            self.client = worker_client  # type: ignore[assignment]
             try:
                 eid = entry.get("id", "unknown")
                 with pool.acquire(description=f"[cyan]{eid}[/cyan]") as cb:
@@ -217,6 +240,8 @@ class FetcherApp:
             except Exception as exc:
                 errors.append((entry.get("id", "unknown"), str(exc)))
                 return False
+            finally:
+                self.client = prev
 
         with graceful_executor(max_workers=workers) as executor:
             try:
@@ -235,6 +260,10 @@ class FetcherApp:
             except KeyboardInterrupt:
                 console.print("\n[yellow]Interrompido.[/yellow]")
                 raise typer.Exit(130) from None
+            finally:
+                for c in _worker_clients:
+                    with contextlib.suppress(Exception):
+                        c.close()
 
         return downloaded, total, errors
 
