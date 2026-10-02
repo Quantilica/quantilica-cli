@@ -9,7 +9,7 @@ import concurrent.futures
 import contextlib
 import datetime as dt
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -18,6 +18,11 @@ from quantilica.core.exceptions import FetchError
 from quantilica.core.ftp import FtpClient
 from quantilica.core.http import HttpClient, HttpStatusError, ProgressCallback
 from quantilica.core.logging import get_logger
+from quantilica.core.storage import (
+    StampedDataRepository,
+    build_stamped_filename,
+    stamp_filename,
+)
 from rich.console import Group
 from rich.live import Live
 from rich.table import Table
@@ -49,6 +54,123 @@ def default_client() -> HttpClient:
     )
 
 
+class DataRepository(StampedDataRepository):
+    """Canonical data repository layout shared by Quantilica fetchers.
+
+    Files are stored under ``{dataset_id}/`` directly, with stamped filenames
+    following the ecosystem convention ``{slug}[@{partition}]@{YYYYMMDD}.{ext}``
+    (see :func:`stamp_filename`). Entries follow the canonical SDK schema:
+    ``group``, ``id``, ``ext``, ``url``, and optional ``year``/``month``/
+    ``semester`` partition fields.
+    """
+
+    def path_for_entry(
+        self,
+        entry: dict[str, Any],
+        *,
+        last_modified: dt.date | None = None,
+    ) -> Path:
+        """Compute the local path for a dataset entry.
+
+        Args:
+            entry: Dataset entry dictionary (canonical SDK schema).
+            last_modified: The last modified date to stamp, or None.
+
+        Returns:
+            Path: The destination path for the entry.
+
+        Raises:
+            StorageError: If a required bucket key is empty or invalid.
+        """
+        dataset_id = str(entry.get("group") or entry.get("id") or "datasets")
+        ext = entry.get("ext")
+        if not ext:
+            tail = str(entry.get("url", "")).split("?")[0].rsplit("/", 1)[-1]
+            ext = tail.rsplit(".", 1)[-1] if "." in tail else "bin"
+
+        year = entry.get("year")
+        month = entry.get("month")
+        semester = entry.get("semester")
+        slug = str(entry.get("id") or dataset_id)
+
+        if year is not None and semester is not None:
+            filename = build_stamped_filename(
+                slug,
+                f"{year}-{semester:02d}",
+                ext=ext,
+                timestamp=last_modified,
+            )
+        elif year is not None and month is not None:
+            filename = build_stamped_filename(
+                slug,
+                f"{year}-{month:02d}",
+                ext=ext,
+                timestamp=last_modified,
+            )
+        elif year is not None:
+            filename = build_stamped_filename(
+                slug, year, ext=ext, timestamp=last_modified
+            )
+        else:
+            filename = stamp_filename(slug, ext, last_modified)
+
+        return self.dataset_path(dataset_id, filename)
+
+
+def default_path_builder(
+    output_dir: Path,
+    entry: dict[str, Any],
+    last_modified: dt.date | None = None,
+) -> Path:
+    """Canonical path builder used when a fetcher does not provide one.
+
+    Args:
+        output_dir: The root output directory.
+        entry: The dataset entry dictionary.
+        last_modified: The last modified date of the dataset.
+
+    Returns:
+        Path: The destination path for the entry.
+    """
+    return DataRepository(output_dir).path_for_entry(entry, last_modified=last_modified)
+
+
+def make_resolve_groups(
+    groups_dict: dict[str, dict[str, Any]],
+    aliases_dict: dict[str, list[str]],
+) -> Callable[[Iterable[str] | None], list[str]]:
+    """Build a resolver mapping group keys/aliases to canonical group IDs.
+
+    Args:
+        groups_dict: Dictionary of dataset groups and their metadata.
+        aliases_dict: Dictionary of alias mappings to dataset groups.
+
+    Returns:
+        Callable: A function receiving group keys and/or aliases (or None for
+        all groups) and returning the deduplicated canonical group IDs in
+        declaration order. Raises ValueError on unknown keys.
+    """
+    groups = list(groups_dict)
+    aliases = dict(aliases_dict)
+
+    def resolve(keys: Iterable[str] | None = None) -> list[str]:
+        resolved: list[str] = []
+        for key in groups if keys is None else keys:
+            expanded = (
+                list(aliases[key])
+                if key in aliases
+                else ([key] if key in groups_dict else [])
+            )
+            if not expanded:
+                raise ValueError(f"Grupo desconhecido: {key!r}")
+            for canon in expanded:
+                if canon not in resolved:
+                    resolved.append(canon)
+        return resolved
+
+    return resolve
+
+
 class FetcherApp:
     """Standard orchestrator for Quantilica fetchers.
 
@@ -58,8 +180,13 @@ class FetcherApp:
         groups_dict: Dictionary of dataset groups and their metadata.
         aliases_dict: Dictionary of alias mappings to dataset groups.
         list_datasets: Callback to list datasets given a group ID.
-        path_builder: Callback to build the destination path.
+        path_builder: Callback to build the destination path. If None, uses
+            :func:`default_path_builder` (canonical ``DataRepository`` layout).
         default_output: Default output directory path.
+        client: HTTP or FTP client instance. Defaults to default_client().
+        build_default_commands: If True (default), registers the built-in
+            ``sync`` and ``list`` commands. Set to False to register only
+            custom commands via :meth:`attach_command`.
         client: HTTP or FTP client instance. Defaults to default_client().
     """
 
@@ -71,16 +198,18 @@ class FetcherApp:
         groups_dict: dict[str, dict[str, Any]],
         aliases_dict: dict[str, list[str]],
         list_datasets: Callable[[str], list[dict[str, Any]]],
-        path_builder: Callable[[Path, dict[str, Any], dt.date | None], Path],
+        path_builder: Callable[[Path, dict[str, Any], dt.date | None], Path]
+        | None = None,
         default_output: Path | None = None,
         client: HttpClient | FtpClient | None = None,
+        build_default_commands: bool = True,
     ):
         self.name = name
         self.help = help
         self.groups = groups_dict
         self.aliases = aliases_dict
         self.list_datasets = list_datasets
-        self.path_builder = path_builder
+        self.path_builder = path_builder or default_path_builder
         self.default_output = default_output or Path(
             f"/data/{name.replace('-fetcher', '')}"
         )
@@ -88,10 +217,31 @@ class FetcherApp:
 
         self.all_group_keys = list(self.groups.keys())
         self.all_keys = self.all_group_keys + list(self.aliases.keys())
+        self.resolve_groups = make_resolve_groups(groups_dict, aliases_dict)
 
         # O objeto typer principal
         self.app = typer.Typer(help=help)
-        self._build_commands()
+        if build_default_commands:
+            self._build_commands()
+
+    def attach_command(
+        self,
+        cmd_func: Callable[..., Any],
+        name: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Register a custom subcommand on the app.
+
+        Lets fetchers add subcommands (e.g. ``convert``, ``pipeline``,
+        ``archive``) cleanly, without subclassing and overriding
+        ``_build_commands``.
+
+        Args:
+            cmd_func: The Typer command function to register.
+            name: The command name. Defaults to the function name.
+            **kwargs: Extra options forwarded to ``typer.Typer.command()``.
+        """
+        self.app.command(name=name, **kwargs)(cmd_func)
 
     def _safe_head_date(self, url: str) -> dt.date | None:
         with contextlib.suppress(Exception):
@@ -294,16 +444,12 @@ class FetcherApp:
             setup_rich_logging(verbose, console=console)
             actual_output = output or self.default_output
 
-            target_groups: list[str] = []
-            for g in groups or self.all_group_keys:
-                expanded = self._expand_group(g)
-                if not expanded:
-                    console.print(f"[red]Grupo desconhecido: {g!r}[/red]")
-                    console.print(f"Grupos válidos: {', '.join(self.all_keys)}")
-                    raise typer.Exit(1)
-                for canon in expanded:
-                    if canon not in target_groups:
-                        target_groups.append(canon)
+            try:
+                target_groups = self.resolve_groups(groups)
+            except ValueError as exc:
+                console.print(f"[red]{exc}[/red]")
+                console.print(f"Grupos válidos: {', '.join(self.all_keys)}")
+                raise typer.Exit(1) from None
 
             entries = [e for g in target_groups for e in self.list_datasets(g)]
 
