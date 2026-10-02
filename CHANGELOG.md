@@ -5,6 +5,34 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.7.0] - 2026-10-02
+
+Onda 2 — extensões do SDK (`quantilica.cli.sdk`) para eliminação de
+boilerplate nos fetchers (decisão
+`2026-10-02-padronizacao-e-deduplicacao-fetchers`).
+
+### Adicionado
+- `DataRepository` canônico no SDK (baseado em `StampedDataRepository` do core)
+  com `path_for_entry(entry, last_modified=...)`, estabelecendo a convenção
+  única de layout: `{dataset_id}/{slug}[@{partition}]@{YYYYMMDD}.{ext}`.
+- `default_path_builder(output_dir, entry, last_modified)`: path builder
+  canônico para fetchers que não fornecem um próprio.
+- `FetcherApp.attach_command(cmd_func, name=None, **kwargs)`: registro limpo de
+  subcomandos customizados (`convert`, `pipeline`, `archive`) sem subclassificar
+  e sobrescrever `_build_commands`.
+- `FetcherApp(build_default_commands=False)`: instancie o app sem os comandos
+  padrão `sync`/`list` (fim do padrão `def _build_commands(): pass`).
+- `make_resolve_groups(groups_dict, aliases_dict)`: helper que constrói
+  resolver de grupos/aliases para comandos customizados (dedup, ordem
+  declarada, erro em grupos desconhecidos); o comando `sync` padrão agora o
+  usa.
+- Commit `feat(sdk)`: `default_client()` já com `emulate_browser` e pooling
+  keep-alive por worker em `download_datasets` (anteriomente não documentado).
+
+### Alterado
+- `path_builder` no `FetcherApp` é agora opcional (default:
+  `default_path_builder`).
+
 ## [0.3.2] - 2026-08-22
 
 ### Corrigido
