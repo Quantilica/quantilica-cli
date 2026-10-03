@@ -5,6 +5,32 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.8.0] - 2026-10-03
+
+Onda A.2 do plano `2026-10-03-padronizacao-core-e-consolidacao-fetchers` —
+decorators de ciclo de vida no SDK (`quantilica.cli.sdk`) e abstração de
+pré-visualização tabular de sincronização.
+
+### Adicionado
+- `FetcherApp.command_convert(func)`: decorator que registra o subcomando
+  `convert` com flags canônicas (`-i/--input`, `-o/--output`, `--verbose`,
+  padrões derivados de `default_output`). Configura logging Rich, trata
+  `ImportError` graciosamente (sugerindo `pip install {nome}[analysis]`,
+  saída com código 1) e exibe confirmação com check verde.
+- `FetcherApp.command_pipeline(func)`: decorator que registra o subcomando
+  `pipeline` encadeando sincronização (passo 1/2, via `sync`) e conversão
+  analítica (passo 2/2, via `func`). Opções: grupos, `--output`,
+  `--parquet-dir`, `--workers`, `--dry-run` (interrompe antes do passo 2) e
+  `--verbose`.
+- `FetcherApp.command_archive(func)`: decorator que registra o subcomando
+  `archive` para arquivamento histórico, com o mesmo padrão de flags e
+  tratamento gracioso de `ImportError`.
+- `SyncPlanItem`/`SyncPlan`: dataclasses (imutáveis) para planejamento de
+  sincronização, com `SyncPlan.render_table(console=None)` que renderiza uma
+  tabela Rich (`Dataset | Partição | Arquivo | URL`) e o sumário `Total: X
+  arquivos planejados. Y ignorados fora de cobertura.` Importados do
+  `quantilica.cli.sdk`.
+
 ## [0.7.0] - 2026-10-02
 
 Onda 2 — extensões do SDK (`quantilica.cli.sdk`) para eliminação de

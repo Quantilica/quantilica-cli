@@ -10,6 +10,7 @@ import contextlib
 import datetime as dt
 import threading
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -23,8 +24,9 @@ from quantilica.core.storage import (
     build_stamped_filename,
     stamp_filename,
 )
-from rich.console import Group
+from rich.console import Console, Group
 from rich.live import Live
+from rich.rule import Rule
 from rich.table import Table
 
 from quantilica.cli.ui import (
@@ -37,6 +39,78 @@ from quantilica.cli.ui import (
 )
 
 logger = get_logger(__name__)
+
+__all__ = [
+    "DataRepository",
+    "FetcherApp",
+    "SyncPlan",
+    "SyncPlanItem",
+    "default_client",
+    "default_path_builder",
+    "make_resolve_groups",
+]
+
+
+@dataclass(frozen=True)
+class SyncPlanItem:
+    """A single dataset file planned for synchronization.
+
+    Args:
+        dataset: Canonical dataset (group) identifier.
+        partition: Human-readable partition label (e.g. ``2023-05``), or None.
+        filename: The stamped file name for the entry.
+        url: Remote URL for the resource.
+        target: Local destination path.
+        dataset_name: Optional human-readable dataset name.
+    """
+
+    dataset: str
+    partition: str | None
+    filename: str
+    url: str
+    target: Path
+    dataset_name: str = ""
+
+
+@dataclass(frozen=True)
+class SyncPlan:
+    """Preview plan for a synchronization run (``--dry-run``).
+
+    Args:
+        items: Planned :class:`SyncPlanItem` entries.
+        skipped: Number of entries ignored (outside of coverage).
+    """
+
+    items: list[SyncPlanItem] = field(default_factory=list)
+    skipped: int = 0
+
+    def render_table(self, console: Console | None = None) -> None:
+        """Render the plan as a Rich table with a summary footer.
+
+        Args:
+            console: Optional Rich Console to print to (defaults to the shared
+                console from :mod:`quantilica.cli.ui`).
+        """
+        con = console or get_console()
+        table = Table(
+            "Dataset",
+            "Partição",
+            "Arquivo",
+            "URL",
+            title="Arquivos a baixar (dry-run)",
+        )
+        for item in self.items:
+            table.add_row(
+                item.dataset,
+                item.partition or "—",
+                item.filename,
+                item.url,
+            )
+        con.print(table)
+        con.print(
+            f"Total: {len(self.items)} arquivos planejados. "
+            f"{self.skipped} ignorados fora de cobertura."
+        )
 
 
 def default_client() -> HttpClient:
@@ -242,6 +316,211 @@ class FetcherApp:
             **kwargs: Extra options forwarded to ``typer.Typer.command()``.
         """
         self.app.command(name=name, **kwargs)(cmd_func)
+
+    def command_convert(
+        self, func: Callable[[Path, Path], Any]
+    ) -> Callable[[Path, Path], Any]:
+        """Register the standard ``convert`` subcommand.
+
+        The generated command exposes the canonical flags (``-i/--input``,
+        ``-o/--output``, ``--verbose``) and delegates to ``func(input, output)``.
+        An ``ImportError`` propagating from ``func`` is treated as missing
+        analytical extras and exits gracefully with code 1.
+
+        Args:
+            func: Callable receiving ``(input, output)`` paths and performing
+                the conversion.
+
+        Returns:
+            The original ``func`` (the method can be used as a decorator).
+        """
+        console = get_console()
+
+        @self.app.command("convert")
+        def convert(
+            input: Annotated[
+                Path,
+                typer.Option(
+                    "-i",
+                    "--input",
+                    help="Diretório de origem com arquivos brutos",
+                ),
+            ] = self.default_output,
+            output: Annotated[
+                Path,
+                typer.Option("-o", "--output", help="Diretório de destino"),
+            ] = self.default_output,
+            verbose: Annotated[
+                bool, typer.Option("--verbose", help="Logs detalhados")
+            ] = False,
+        ) -> None:
+            setup_rich_logging(verbose, console=console)
+            try:
+                func(input, output)
+            except ImportError:
+                console.print(
+                    f"[red]Erro:[/red] convert requer extras de análise: "
+                    f"pip install {self.name}\[analysis]"
+                )
+                raise typer.Exit(1) from None
+            console.print(
+                f"[green]✓[/green] Conversão concluída em [dim]{output}[/dim]."
+            )
+
+        return func
+
+    def command_archive(
+        self, func: Callable[[Path, Path], Any]
+    ) -> Callable[[Path, Path], Any]:
+        """Register the standard ``archive`` subcommand.
+
+        Mirrors :meth:`command_convert` with the canonical flags
+        (``-i/--input``, ``-o/--output``, ``--verbose``) and delegates to
+        ``func(input, output)``. An ``ImportError`` propagating from ``func``
+        is treated as missing analytical extras and exits gracefully with
+        code 1.
+
+        Args:
+            func: Callable receiving ``(input, output)`` paths and creating
+                the historical archive.
+
+        Returns:
+            The original ``func`` (the method can be used as a decorator).
+        """
+        console = get_console()
+
+        @self.app.command("archive")
+        def archive(
+            input: Annotated[
+                Path,
+                typer.Option(
+                    "-i",
+                    "--input",
+                    help="Diretório de dados a arquivar",
+                ),
+            ] = self.default_output,
+            output: Annotated[
+                Path,
+                typer.Option("-o", "--output", help="Diretório do arquivo histórico"),
+            ] = self.default_output,
+            verbose: Annotated[
+                bool, typer.Option("--verbose", help="Logs detalhados")
+            ] = False,
+        ) -> None:
+            setup_rich_logging(verbose, console=console)
+            try:
+                func(input, output)
+            except ImportError:
+                console.print(
+                    f"[red]Erro:[/red] archive requer extras de análise: "
+                    f"pip install {self.name}\[analysis]"
+                )
+                raise typer.Exit(1) from None
+            console.print(f"[green]✓[/green] Arquivo criado em [dim]{output}[/dim].")
+
+        return func
+
+    def command_pipeline(
+        self, convert_func: Callable[[Path, Path], Any]
+    ) -> Callable[[Path, Path], Any]:
+        """Register the standard ``pipeline`` subcommand (sync → convert).
+
+        Step 1/2 invokes the built-in ``sync`` command (same flags: groups,
+        ``-o/--output``, ``--parquet-dir``, ``--workers``, ``--dry-run``,
+        ``--verbose``). Step 2/2 invokes ``convert_func(output, parquet_dir)``.
+        With ``--dry-run`` the plan is only listed and the conversion step is
+        skipped. An ``ImportError`` from ``convert_func`` is treated as
+        missing analytical extras.
+
+        Args:
+            convert_func: Callable receiving ``(output, parquet_dir)`` paths
+                and performing the conversion.
+
+        Returns:
+            The original ``convert_func`` (usable as a decorator).
+        """
+        console = get_console()
+
+        @self.app.command("pipeline")
+        def pipeline(
+            ctx: typer.Context,
+            groups: Annotated[
+                list[str] | None,
+                typer.Argument(
+                    help="Grupos a baixar. Use 'list' para ver grupos "
+                    "disponíveis. Padrão: todos."
+                ),
+            ] = None,
+            output: Annotated[
+                Path | None,
+                typer.Option("-o", "--output", help="Diretório de saída"),
+            ] = None,
+            parquet_dir: Annotated[
+                Path | None,
+                typer.Option(
+                    "--parquet-dir",
+                    help="Diretório para os Parquet (padrão: igual a --output)",
+                ),
+            ] = None,
+            workers: Annotated[
+                int, typer.Option("--workers", help="Downloads paralelos")
+            ] = 4,
+            dry_run: Annotated[
+                bool, typer.Option("--dry-run", help="Listar arquivos sem baixar")
+            ] = False,
+            verbose: Annotated[
+                bool, typer.Option("--verbose", help="Logs detalhados")
+            ] = False,
+        ) -> None:
+            setup_rich_logging(verbose, console=console)
+            actual_output = output or self.default_output
+            parquet_out = parquet_dir or actual_output
+
+            console.print(Rule("[bold]Passo 1/2: Download[/bold]"))
+            sync_cmd = next(
+                (
+                    cmd.callback
+                    for cmd in self.app.registered_commands
+                    if cmd.name == "sync"
+                ),
+                None,
+            )
+            if sync_cmd is None:
+                console.print(
+                    "[red]Erro:[/red] pipeline requer o comando 'sync' "
+                    "(build_default_commands=True)."
+                )
+                raise typer.Exit(1) from None
+            ctx.invoke(
+                sync_cmd,
+                groups=groups,
+                output=actual_output,
+                dry_run=dry_run,
+                workers=workers,
+                verbose=verbose,
+            )
+
+            if dry_run:
+                console.print(
+                    "\n[yellow]Dry-run:[/yellow] conversão (passo 2/2) não executada."
+                )
+                return
+
+            console.print(Rule("[bold]Passo 2/2: Conversão[/bold]"))
+            try:
+                convert_func(actual_output, parquet_out)
+            except ImportError:
+                console.print(
+                    f"[red]Erro:[/red] pipeline (conversão) requer extras de "
+                    f"análise: pip install {self.name}\[analysis]"
+                )
+                raise typer.Exit(1) from None
+            console.print(
+                f"[green]✓[/green] Pipeline concluído: Parquet em "
+                f"[dim]{parquet_out}[/dim]."
+            )
+
+        return convert_func
 
     def _safe_head_date(self, url: str) -> dt.date | None:
         with contextlib.suppress(Exception):
