@@ -13,6 +13,7 @@ from rich.logging import RichHandler
 from rich.table import Table
 
 from quantilica.cli import __version__
+from quantilica.cli.health import cmd_health
 from quantilica.cli.manifests import app as manifests_app
 from quantilica.cli.sources import (
     app as sources_app,
@@ -35,10 +36,11 @@ app = typer.Typer(
 app.add_typer(manifests_app, name="manifests")
 app.add_typer(sources_app, name="sources")
 
-# Adiciona comandos top-level install, uninstall e doctor
+# Adiciona comandos top-level install, uninstall, doctor e health
 app.command("install")(cmd_install)
 app.command("uninstall")(cmd_uninstall)
 app.command("doctor")(cmd_doctor)
+app.command("health")(cmd_health)
 
 console = Console()
 
