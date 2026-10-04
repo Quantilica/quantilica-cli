@@ -30,6 +30,11 @@ pré-visualização tabular de sincronização.
   tabela Rich (`Dataset | Partição | Arquivo | URL`) e o sumário `Total: X
   arquivos planejados. Y ignorados fora de cobertura.` Importados do
   `quantilica.cli.sdk`.
+- `quantilica health`: subcomando de diagnóstico que faz sondas HTTP leves
+  (HEAD com fallback para GET, timeout padrão 5s) contra as fontes canônicas
+  do ecossistema — BCB SGS, SIDRA, Tesouro Direto, Comex e INMET — em
+  paralelo, com saída em tabela Rich (`Fonte | Estado | Latência | HTTP`) ou
+  em JSON estruturado via `--json`. Usa `quantilica.core.http` para o probe.
 
 ## [0.7.0] - 2026-10-02
 
