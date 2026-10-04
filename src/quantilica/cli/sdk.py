@@ -360,7 +360,7 @@ class FetcherApp:
             except ImportError:
                 console.print(
                     f"[red]Erro:[/red] convert requer extras de análise: "
-                    f"pip install {self.name}\[analysis]"
+                    rf"pip install {self.name}\[analysis]"
                 )
                 raise typer.Exit(1) from None
             console.print(
@@ -413,7 +413,7 @@ class FetcherApp:
             except ImportError:
                 console.print(
                     f"[red]Erro:[/red] archive requer extras de análise: "
-                    f"pip install {self.name}\[analysis]"
+                    rf"pip install {self.name}\[analysis]"
                 )
                 raise typer.Exit(1) from None
             console.print(f"[green]✓[/green] Arquivo criado em [dim]{output}[/dim].")
@@ -512,7 +512,7 @@ class FetcherApp:
             except ImportError:
                 console.print(
                     f"[red]Erro:[/red] pipeline (conversão) requer extras de "
-                    f"análise: pip install {self.name}\[analysis]"
+                    rf"análise: pip install {self.name}\[analysis]"
                 )
                 raise typer.Exit(1) from None
             console.print(

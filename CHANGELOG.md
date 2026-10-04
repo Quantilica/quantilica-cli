@@ -5,6 +5,21 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.9.1] - 2026-10-04
+
+Correção de escape inválido introduzido na v0.8.0 (Onda A.2 do SDK).
+
+### Corrigido
+- `SyntaxWarning: invalid escape sequence '\['` nas mensagens de `convert`,
+  `archive` e `pipeline` do `FetcherApp` (`quantilica/cli/sdk.py`): as três
+  f-strings passaram a raw (`rf"..."`), preservando o texto enviado ao Rich
+  (`\[analysis]` escapado). O warning aparecia na saída de **todo**
+  `quantilica <fonte> --help` e hoje também é `SyntaxError` em Python ≥ 3.14.
+- Novo teste de higiene (`tests/test_package_hygiene.py`) que compila todos os
+  módulos do pacote com `SyntaxWarning` convertido em erro, fechando a porta
+  para regressões da mesma classe (o ruff não cobre escapes inválidos com o
+  conjunto de regras `E,F,I,UP,B`).
+
 ## [0.9.0] - 2026-10-04
 
 Registra o `cvm-fetcher` como fonte instalável sob demanda, após a v0.1.0 do
