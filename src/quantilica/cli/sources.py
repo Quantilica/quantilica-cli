@@ -30,6 +30,7 @@ SOURCES_REGISTRY: dict[str, str] = {
     "anp": "anp-fetcher",
     "bcb-sgs": "bcb-sgs-fetcher",
     "comex": "comex-fetcher",
+    "cvm": "cvm-fetcher",
     "datasus": "datasus-fetcher",
     "inmet": "inmet-fetcher",
     "pdet": "pdet-fetcher",

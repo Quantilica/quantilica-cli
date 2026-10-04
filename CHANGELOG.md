@@ -5,6 +5,15 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.9.0] - 2026-10-04
+
+Registra o `cvm-fetcher` como fonte instalável sob demanda, após a v0.1.0 do
+fetcher (wheel no GitHub Releases, entrada no índice PEP 503 do ecossistema).
+
+### Adicionado
+- Fonte `cvm` em `SOURCES_REGISTRY` (`quantilica install cvm`), apontando
+  para a distribuição `cvm-fetcher`.
+
 ## [0.8.0] - 2026-10-03
 
 Onda A.2 do plano `2026-10-03-padronizacao-core-e-consolidacao-fetchers` —
