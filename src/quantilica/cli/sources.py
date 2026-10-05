@@ -37,6 +37,7 @@ SOURCES_REGISTRY: dict[str, str] = {
     "rtn": "rtn-fetcher",
     "sidra": "sidra-fetcher",
     "td": "tesouro-direto-fetcher",
+    "tse": "tse-fetcher",
 }
 
 
