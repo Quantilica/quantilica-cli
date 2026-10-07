@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 from quantilica.cli.sdk import (
     DataRepository,
     FetcherApp,
+    default_client,
     default_path_builder,
     make_resolve_groups,
 )
@@ -275,3 +276,27 @@ def test_builtin_list():
     result = runner.invoke(app.app, ["list"])
     assert result.exit_code == 0, result.output
     assert "2 dataset(s) no catálogo." in result.output
+
+
+# ---------------------------------------------------------------
+# default_client: overrides via ambiente
+# ---------------------------------------------------------------
+
+
+def test_default_client_verify_defaults_true(monkeypatch):
+    monkeypatch.delenv("QUANTILICA_SSL_VERIFY", raising=False)
+    monkeypatch.delenv("QUANTILICA_CA_BUNDLE", raising=False)
+    assert default_client().verify is True
+
+
+def test_default_client_verify_env_disable(monkeypatch):
+    monkeypatch.delenv("QUANTILICA_CA_BUNDLE", raising=False)
+    monkeypatch.setenv("QUANTILICA_SSL_VERIFY", "0")
+    assert default_client().verify is False
+
+
+def test_default_client_attempts_env_override(monkeypatch):
+    monkeypatch.delenv("QUANTILICA_SSL_VERIFY", raising=False)
+    monkeypatch.delenv("QUANTILICA_CA_BUNDLE", raising=False)
+    monkeypatch.setenv("QUANTILICA_HTTP_ATTEMPTS", "9")
+    assert default_client().attempts == 9

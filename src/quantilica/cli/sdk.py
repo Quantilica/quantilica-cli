@@ -8,6 +8,7 @@ from __future__ import annotations
 import concurrent.futures
 import contextlib
 import datetime as dt
+import os
 import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -17,7 +18,12 @@ from typing import Annotated, Any
 import typer
 from quantilica.core.exceptions import FetchError
 from quantilica.core.ftp import FtpClient
-from quantilica.core.http import HttpClient, HttpStatusError, ProgressCallback
+from quantilica.core.http import (
+    HttpClient,
+    HttpStatusError,
+    ProgressCallback,
+    resolve_verify_from_env,
+)
 from quantilica.core.logging import get_logger
 from quantilica.core.storage import (
     StampedDataRepository,
@@ -116,14 +122,32 @@ class SyncPlan:
 def default_client() -> HttpClient:
     """Create a default HttpClient with standard configuration.
 
+    TLS verification and retry budget can be overridden via environment:
+
+    - ``QUANTILICA_CA_BUNDLE``: path to a custom CA bundle.
+    - ``QUANTILICA_SSL_VERIFY``: ``0``/``false`` disables verification
+      (ops escape hatch for hosts with broken chains — never default);
+      a path uses it as CA bundle.
+    - ``QUANTILICA_HTTP_ATTEMPTS`` / ``QUANTILICA_HTTP_TIMEOUT`` /
+      ``QUANTILICA_HTTP_RETRY_DELAY``: retry budget overrides.
+
     Returns:
         A pre-configured HttpClient instance (browser-like WAF headers + pooling).
     """
+    verify = resolve_verify_from_env()
+    if verify is False:
+        logger.warning(
+            "TLS verification disabled via QUANTILICA_SSL_VERIFY — "
+            "use only for hosts with broken chains"
+        )
+    attempts = int(os.environ.get("QUANTILICA_HTTP_ATTEMPTS", "5"))
+    timeout = float(os.environ.get("QUANTILICA_HTTP_TIMEOUT", "180.0"))
+    retry_base_delay = float(os.environ.get("QUANTILICA_HTTP_RETRY_DELAY", "2.0"))
     return HttpClient(
-        timeout=180.0,
-        verify=True,
-        attempts=5,
-        retry_base_delay=2.0,
+        timeout=timeout,
+        verify=verify,
+        attempts=attempts,
+        retry_base_delay=retry_base_delay,
         emulate_browser=True,
     )
 
