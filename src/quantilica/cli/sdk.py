@@ -8,6 +8,8 @@ from __future__ import annotations
 import concurrent.futures
 import contextlib
 import datetime as dt
+import email.utils
+import json
 import os
 import threading
 from collections.abc import Callable, Iterable
@@ -22,6 +24,7 @@ from quantilica.core.http import (
     HttpClient,
     HttpStatusError,
     ProgressCallback,
+    is_remote_more_recent,
     resolve_verify_from_env,
 )
 from quantilica.core.logging import get_logger
@@ -47,6 +50,8 @@ from quantilica.cli.ui import (
 logger = get_logger(__name__)
 
 __all__ = [
+    "CheckPlan",
+    "CheckPlanItem",
     "DataRepository",
     "FetcherApp",
     "SyncPlan",
@@ -117,6 +122,200 @@ class SyncPlan:
             f"Total: {len(self.items)} arquivos planejados. "
             f"{self.skipped} ignorados fora de cobertura."
         )
+
+
+def _partition_label(entry: dict[str, Any]) -> str | None:
+    """Human-readable partition label for a dataset entry."""
+    if entry.get("semester") is not None:
+        return f"{entry['year']}-S{entry['semester']}"
+    if entry.get("month") is not None:
+        return f"{entry['year']}-{entry['month']:02d}"
+    if entry.get("year") is not None:
+        return str(entry["year"])
+    return None
+
+
+def _parse_head_date(value: str | None) -> dt.date | None:
+    """Parse an HTTP Last-Modified header value into a date, or None."""
+    if not value:
+        return None
+    with contextlib.suppress(Exception):
+        return email.utils.parsedate_to_datetime(value).date()
+    return None
+
+
+def _short_remote(item: CheckPlanItem) -> str:
+    """Compact remote description for table display (narrow terminals)."""
+    date = _parse_head_date(item.remote_last_modified)
+    remote = date.isoformat() if date else (item.remote_last_modified or "—")
+    if item.remote_size:
+        remote += f" ({item.remote_size} B)"
+    return remote
+
+
+@dataclass(frozen=True)
+class CheckPlanItem:
+    """Freshness verdict for a single dataset entry (no download performed).
+
+    Args:
+        dataset: Canonical dataset (group) identifier.
+        id: Dataset entry identifier.
+        url: Remote URL that was checked.
+        partition: Human-readable partition label, or None.
+        local_path: Local destination path the entry maps to.
+        remote_etag: Remote ETag header, or None.
+        remote_last_modified: Remote Last-Modified header, or None.
+        remote_size: Remote Content-Length, or None.
+        local_exists: Whether the local file already exists.
+        action: ``"download"`` or ``"skip-up-to-date"``.
+        reason: Machine-readable reason for the action.
+        entry: Original dataset entry (allows ``sync --from-plan`` round-trip).
+    """
+
+    dataset: str
+    id: str
+    url: str
+    partition: str | None
+    local_path: str
+    remote_etag: str | None
+    remote_last_modified: str | None
+    remote_size: int | None
+    local_exists: bool
+    action: str
+    reason: str
+    entry: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class CheckPlan:
+    """Freshness plan for a verification run (``check`` command).
+
+    Args:
+        fetcher: Name of the fetcher that produced the plan.
+        output_dir: Output directory the plan was computed against.
+        generated_at: ISO-8601 UTC timestamp of plan generation.
+        items: Per-entry verdicts.
+    """
+
+    fetcher: str
+    output_dir: str
+    generated_at: str
+    items: list[CheckPlanItem] = field(default_factory=list)
+
+    def render_table(self, console: Console | None = None) -> None:
+        """Render the plan as a Rich table with a summary footer."""
+        con = console or get_console()
+        table = Table(
+            "Dataset",
+            "ID",
+            "Ação",
+            "Motivo",
+            "Remoto",
+            title="Verificação remoto × local (check)",
+        )
+        for item in self.items:
+            table.add_row(
+                item.dataset,
+                item.id,
+                item.action,
+                item.reason,
+                _short_remote(item),
+            )
+        con.print(table)
+        counts: dict[str, int] = {}
+        for item in self.items:
+            counts[item.action] = counts.get(item.action, 0) + 1
+        summary = ", ".join(f"{v} {k}" for k, v in sorted(counts.items()))
+        con.print(f"[bold]{len(self.items)}[/bold] verificado(s): {summary}.")
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the JSON-serializable representation of the plan."""
+        return {
+            "fetcher": self.fetcher,
+            "output_dir": self.output_dir,
+            "generated_at": self.generated_at,
+            "items": [
+                {
+                    "dataset": it.dataset,
+                    "id": it.id,
+                    "url": it.url,
+                    "partition": it.partition,
+                    "local_path": it.local_path,
+                    "remote_etag": it.remote_etag,
+                    "remote_last_modified": it.remote_last_modified,
+                    "remote_size": it.remote_size,
+                    "local_exists": it.local_exists,
+                    "action": it.action,
+                    "reason": it.reason,
+                    "entry": it.entry,
+                }
+                for it in self.items
+            ],
+        }
+
+    def to_json(self) -> str:
+        """Serialize the plan to a JSON string (for ``sync --from-plan``)."""
+        return json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CheckPlan:
+        """Rebuild a plan from :meth:`to_dict` output.
+
+        Raises:
+            ValueError: If the payload is not a valid check plan.
+        """
+        if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+            raise ValueError("not a check plan: missing 'items' list")
+        items = []
+        for raw in data["items"]:
+            if not isinstance(raw, dict):
+                raise ValueError("not a check plan: invalid item")
+            try:
+                entry = raw["entry"]
+                action = raw["action"]
+                eid = raw["id"]
+            except KeyError as exc:
+                raise ValueError(f"not a check plan: item missing {exc}") from exc
+            if not isinstance(entry, dict) or action not in (
+                "download",
+                "skip-up-to-date",
+            ):
+                raise ValueError("not a check plan: invalid item")
+            items.append(
+                CheckPlanItem(
+                    dataset=str(raw.get("dataset", "")),
+                    id=str(eid),
+                    url=str(raw.get("url", "")),
+                    partition=raw.get("partition"),
+                    local_path=str(raw.get("local_path", "")),
+                    remote_etag=raw.get("remote_etag"),
+                    remote_last_modified=raw.get("remote_last_modified"),
+                    remote_size=raw.get("remote_size"),
+                    local_exists=bool(raw.get("local_exists", False)),
+                    action=action,
+                    reason=str(raw.get("reason", "")),
+                    entry=entry,
+                )
+            )
+        return cls(
+            fetcher=str(data.get("fetcher", "")),
+            output_dir=str(data.get("output_dir", "")),
+            generated_at=str(data.get("generated_at", "")),
+            items=items,
+        )
+
+    @classmethod
+    def from_json(cls, payload: str) -> CheckPlan:
+        """Parse a plan serialized with :meth:`to_json`.
+
+        Raises:
+            ValueError: If the payload is not valid JSON or not a plan.
+        """
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"not a check plan: invalid JSON ({exc})") from exc
+        return cls.from_dict(data)
 
 
 def default_client() -> HttpClient:
@@ -672,6 +871,7 @@ class FetcherApp:
                     attempts=self.client.attempts,
                     retry_base_delay=self.client.retry_base_delay,
                     verify=self.client.verify,
+                    transport=self.client.transport,
                     limits=self.client.limits,
                     emulate_browser=True,
                 )
@@ -720,6 +920,133 @@ class FetcherApp:
 
         return downloaded, total, errors
 
+    def check_entry(self, entry: dict[str, Any], output_dir: Path) -> CheckPlanItem:
+        """Check one dataset entry against the remote without downloading.
+
+        Performs HEAD requests (same URLs ``download_entry`` would try,
+        including ``fallback_urls``) and compares against the local stamped
+        file using the same freshness predicate as the download path.
+
+        Args:
+            entry: Dictionary containing dataset metadata (url, id, etc).
+            output_dir: Destination directory used for path computation.
+
+        Returns:
+            The freshness verdict for the entry.
+        """
+        dataset = str(entry.get("group") or entry.get("id") or "datasets")
+        eid = str(entry.get("id", "unknown"))
+        partition = _partition_label(entry)
+        urls_to_try = [entry["url"]]
+        if "fallback_urls" in entry and entry["fallback_urls"]:
+            urls_to_try.extend(entry["fallback_urls"])
+
+        head = None
+        head_error: Exception | None = None
+        for url in urls_to_try:
+            try:
+                candidate = self.client.head(url)
+            except HttpStatusError as exc:
+                if exc.status_code == 404:
+                    head_error = exc
+                    continue
+                head_error = exc
+                break
+            except Exception as exc:  # noqa: BLE001 - metadata best effort
+                head_error = exc
+                break
+            head = candidate
+            break
+
+        if head is None:
+            local = self.path_builder(output_dir, entry, None)
+            return CheckPlanItem(
+                dataset=dataset,
+                id=eid,
+                url=str(entry["url"]),
+                partition=partition,
+                local_path=str(local),
+                remote_etag=None,
+                remote_last_modified=None,
+                remote_size=None,
+                local_exists=local.exists(),
+                action="download",
+                reason=f"metadata-unavailable: {head_error}",
+                entry=dict(entry),
+            )
+
+        etag = head.headers.get("ETag")
+        size_raw = head.headers.get("Content-Length")
+        try:
+            size = int(size_raw) if size_raw else None
+        except (TypeError, ValueError):
+            size = None
+        last_modified = _parse_head_date(head.headers.get("Last-Modified"))
+        local = self.path_builder(output_dir, entry, last_modified)
+        exists = local.exists()
+        if exists and not is_remote_more_recent(head, local):
+            action, reason = "skip-up-to-date", "local-fresh"
+        else:
+            action = "download"
+            reason = "not-present" if not exists else "remote-newer"
+        return CheckPlanItem(
+            dataset=dataset,
+            id=eid,
+            url=str(head.url),
+            partition=partition,
+            local_path=str(local),
+            remote_etag=etag,
+            remote_last_modified=head.headers.get("Last-Modified"),
+            remote_size=size,
+            local_exists=exists,
+            action=action,
+            reason=reason,
+            entry=dict(entry),
+        )
+
+    def check_datasets(
+        self,
+        entries: list[dict[str, Any]],
+        output_dir: Path,
+        workers: int = 4,
+    ) -> CheckPlan:
+        """Checks freshness for a list of dataset entries (no downloads).
+
+        Args:
+            entries: List of dataset entries to check.
+            output_dir: The base directory used for path computation.
+            workers: Maximum number of parallel checks.
+
+        Returns:
+            A :class:`CheckPlan` with one verdict per entry.
+        """
+        results: list[CheckPlanItem | None] = [None] * len(entries)
+
+        def _worker(index: int, entry: dict[str, Any]) -> None:
+            results[index] = self.check_entry(entry, output_dir)
+            if (index + 1) % 100 == 0 or index + 1 == len(entries):
+                logger.info("[check] %d/%d verificados", index + 1, len(entries))
+
+        with graceful_executor(max_workers=workers) as executor:
+            try:
+                futures = {
+                    executor.submit(_worker, index, entry): index
+                    for index, entry in enumerate(entries)
+                }
+                for future in concurrent.futures.as_completed(futures):
+                    future.result()
+            except KeyboardInterrupt:
+                get_console().print("\n[yellow]Interrompido.[/yellow]")
+                raise typer.Exit(130) from None
+
+        generated = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
+        return CheckPlan(
+            fetcher=self.name,
+            output_dir=str(output_dir),
+            generated_at=generated,
+            items=[item for item in results if item is not None],
+        )
+
     def _build_commands(self) -> None:
         console = get_console()
 
@@ -740,6 +1067,15 @@ class FetcherApp:
             workers: Annotated[
                 int, typer.Option("--workers", help="Downloads paralelos")
             ] = 4,
+            from_plan: Annotated[
+                Path | None,
+                typer.Option(
+                    "--from-plan",
+                    help="Baixar somente as entradas com ação 'download' "
+                    "de um plano gerado por 'check' (ignora a seleção "
+                    "de grupos).",
+                ),
+            ] = None,
             verbose: Annotated[
                 bool, typer.Option("--verbose", help="Logs detalhados")
             ] = False,
@@ -747,14 +1083,28 @@ class FetcherApp:
             setup_rich_logging(verbose, console=console)
             actual_output = output or self.default_output
 
-            try:
-                target_groups = self.resolve_groups(groups)
-            except ValueError as exc:
-                console.print(f"[red]{exc}[/red]")
-                console.print(f"Grupos válidos: {', '.join(self.all_keys)}")
-                raise typer.Exit(1) from None
+            if from_plan is not None:
+                try:
+                    plan = CheckPlan.from_json(from_plan.read_text(encoding="utf-8"))
+                except (OSError, ValueError) as exc:
+                    console.print(f"[red]Plano inválido: {exc}[/red]")
+                    raise typer.Exit(1) from None
+                entries = [
+                    dict(item.entry) for item in plan.items if item.action == "download"
+                ]
+                console.print(
+                    f"[dim]Plano {from_plan}: {len(entries)} entrada(s) "
+                    f"com ação 'download' de {len(plan.items)} verificada(s).[/dim]"
+                )
+            else:
+                try:
+                    target_groups = self.resolve_groups(groups)
+                except ValueError as exc:
+                    console.print(f"[red]{exc}[/red]")
+                    console.print(f"Grupos válidos: {', '.join(self.all_keys)}")
+                    raise typer.Exit(1) from None
 
-            entries = [e for g in target_groups for e in self.list_datasets(g)]
+                entries = [e for g in target_groups for e in self.list_datasets(g)]
 
             if dry_run:
                 table = Table("Grupo", "ID", "URL", title="Arquivos a baixar (dry-run)")
@@ -775,6 +1125,49 @@ class FetcherApp:
                 console.print(f"[red]{len(errors)} erro(s):[/red]")
                 for eid, emsg in errors:
                     console.print(f"  {eid}: {emsg}")
+
+        @self.app.command("check")
+        def check(
+            groups: Annotated[
+                list[str] | None,
+                typer.Argument(
+                    help="Grupos a verificar. Use 'list' para ver grupos disponíveis. Padrão: todos."
+                ),
+            ] = None,
+            output: Annotated[
+                Path | None, typer.Option("-o", "--output", help="Diretório de saída")
+            ] = None,
+            workers: Annotated[
+                int, typer.Option("--workers", help="Verificações paralelas")
+            ] = 4,
+            as_json: Annotated[
+                bool,
+                typer.Option(
+                    "--json",
+                    help="Imprime o plano em JSON (para 'sync --from-plan')",
+                ),
+            ] = False,
+            verbose: Annotated[
+                bool, typer.Option("--verbose", help="Logs detalhados")
+            ] = False,
+        ) -> None:
+            setup_rich_logging(verbose, console=console)
+            actual_output = output or self.default_output
+
+            try:
+                target_groups = self.resolve_groups(groups)
+            except ValueError as exc:
+                console.print(f"[red]{exc}[/red]")
+                console.print(f"Grupos válidos: {', '.join(self.all_keys)}")
+                raise typer.Exit(1) from None
+
+            entries = [e for g in target_groups for e in self.list_datasets(g)]
+            plan = self.check_datasets(entries, actual_output, workers=workers)
+
+            if as_json:
+                print(plan.to_json())
+            else:
+                plan.render_table()
 
         @self.app.command("list")
         def cmd_list(

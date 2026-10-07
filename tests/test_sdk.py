@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 from pathlib import Path
 from typing import Annotated
 
+import httpx2
 import pytest
 import typer
+from quantilica.core.http import HttpClient
 from typer.testing import CliRunner
 
 from quantilica.cli.sdk import (
+    CheckPlan,
     DataRepository,
     FetcherApp,
     default_client,
@@ -276,6 +280,137 @@ def test_builtin_list():
     result = runner.invoke(app.app, ["list"])
     assert result.exit_code == 0, result.output
     assert "2 dataset(s) no catálogo." in result.output
+
+
+# ---------------------------------------------------------------
+# check (verificação remoto × local, sem download) + sync --from-plan
+# ---------------------------------------------------------------
+
+
+def _head_handler(payload: bytes = b"0123456789"):
+    def handler(request):
+        if request.method == "HEAD":
+            return httpx2.Response(
+                200,
+                headers={
+                    "Content-Length": str(len(payload)),
+                    "Last-Modified": "Mon, 01 Jan 2024 00:00:00 GMT",
+                    "ETag": '"abc123"',
+                },
+            )
+        return httpx2.Response(200, content=payload)
+
+    return handler
+
+
+def _mock_client(payload: bytes = b"0123456789") -> HttpClient:
+    return HttpClient(
+        attempts=1, transport=httpx2.MockTransport(_head_handler(payload))
+    )
+
+
+def test_check_entry_missing_downloads(tmp_path: Path):
+    app = make_app(client=_mock_client())
+    entry = sample_list_datasets("exp")[0]
+    item = app.check_entry(entry, tmp_path)
+    assert item.action == "download"
+    assert item.reason == "not-present"
+    assert item.remote_etag == '"abc123"'
+    assert item.remote_size == 10
+    assert item.remote_last_modified == "Mon, 01 Jan 2024 00:00:00 GMT"
+    assert item.local_exists is False
+
+
+def test_check_entry_fresh_skips(tmp_path: Path):
+    from quantilica.cli.sdk import default_path_builder
+
+    app = make_app(client=_mock_client())
+    entry = sample_list_datasets("exp")[0]
+    local = default_path_builder(tmp_path, entry, dt.date(2024, 1, 1))
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_bytes(b"0123456789")
+    item = app.check_entry(entry, tmp_path)
+    assert item.action == "skip-up-to-date"
+    assert item.reason == "local-fresh"
+    assert item.local_exists is True
+
+
+def test_check_entry_head_error_downloads(tmp_path: Path):
+    def handler(request):
+        raise httpx2.ConnectError("down")
+
+    app = make_app(
+        client=HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
+    )
+    entry = sample_list_datasets("exp")[0]
+    item = app.check_entry(entry, tmp_path)
+    assert item.action == "download"
+    assert item.reason.startswith("metadata-unavailable")
+
+
+def test_check_plan_json_roundtrip(tmp_path: Path):
+    app = make_app(client=_mock_client())
+    entries = sample_list_datasets("exp")
+    plan = app.check_datasets(entries, tmp_path, workers=1)
+    restored = CheckPlan.from_json(plan.to_json())
+    assert restored.fetcher == plan.fetcher
+    assert [it.id for it in restored.items] == [it.id for it in plan.items]
+    assert restored.items[0].entry["url"] == entries[0]["url"]
+
+
+def test_check_plan_from_json_rejects_garbage():
+    with pytest.raises(ValueError, match="not a check plan"):
+        CheckPlan.from_json('{"foo": 1}')
+    with pytest.raises(ValueError, match="not a check plan"):
+        CheckPlan.from_json("not json")
+
+
+def test_builtin_check_command(tmp_path: Path):
+    app = make_app(client=_mock_client())
+    result = runner.invoke(app.app, ["check", "exp", "-o", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "download" in result.output
+
+
+def test_builtin_check_json_output(tmp_path: Path):
+    app = make_app(client=_mock_client())
+    result = runner.invoke(app.app, ["check", "exp", "-o", str(tmp_path), "--json"])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["items"][0]["action"] == "download"
+
+
+def test_builtin_sync_from_plan_downloads_only_planned(tmp_path: Path):
+    from quantilica.cli.sdk import default_path_builder
+
+    payload = b"0123456789"
+    app = make_app(client=_mock_client(payload))
+    fresh_entry = sample_list_datasets("exp")[0]
+    stale_entry = dict(sample_list_datasets("imp")[0])
+    local = default_path_builder(tmp_path, fresh_entry, dt.date(2024, 1, 1))
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_bytes(payload)
+
+    plan = app.check_datasets([fresh_entry, stale_entry], tmp_path, workers=1)
+    actions = {it.id: it.action for it in plan.items}
+    assert actions == {"exp-monthly": "skip-up-to-date", "imp-monthly": "download"}
+
+    plan_file = tmp_path / "plan.json"
+    plan_file.write_text(plan.to_json(), encoding="utf-8")
+    result = runner.invoke(
+        app.app, ["sync", "--from-plan", str(plan_file), "-o", str(tmp_path)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "1/1 arquivo(s) baixado(s)" in result.output
+
+
+def test_builtin_sync_from_plan_invalid_file(tmp_path: Path):
+    app = make_app(client=_mock_client())
+    bad = tmp_path / "bad.json"
+    bad.write_text('{"nope": true}', encoding="utf-8")
+    result = runner.invoke(app.app, ["sync", "--from-plan", str(bad)])
+    assert result.exit_code == 1
+    assert "Plano inválido" in result.output
 
 
 # ---------------------------------------------------------------
