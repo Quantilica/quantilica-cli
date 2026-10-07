@@ -5,6 +5,26 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.10.0] - 2026-10-07
+
+### Adicionado
+
+- `FetcherApp`: comando `check` — verificação remoto × local (HEAD por
+  entrada) com plano de freshness, sem baixar; `--json` emite plano
+  consumível por `sync --from-plan`.
+- `FetcherApp.sync`: opção `--from-plan <arquivo.json>` — baixa somente as
+  entradas com ação `download` do plano.
+- SDK: `CheckPlan`/`CheckPlanItem` (tabela Rich + round-trip JSON) e
+  `default_client()` com overrides via ambiente (`QUANTILICA_CA_BUNDLE`,
+  `QUANTILICA_SSL_VERIFY`, `QUANTILICA_HTTP_ATTEMPTS/TIMEOUT/RETRY_DELAY`).
+
+### Alterado
+
+- Piso de `quantilica-core` elevado para `>=0.10.0` (símbolos usados:
+  `is_remote_more_recent`, `resolve_verify_from_env`).
+- Workers internos do `download_datasets` propagam o `transport` customizado
+  do client canônico.
+
 ## [0.9.1] - 2026-10-04
 
 Correção de escape inválido introduzido na v0.8.0 (Onda A.2 do SDK).
