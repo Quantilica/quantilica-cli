@@ -5,6 +5,14 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.10.1] - 2026-10-08
+
+### Corrigido
+
+- `sdk`: `check_entry` considera `local.exists() or sidecar.exists()`, preservando
+  o status de `manifest-fresh` em ambientes de ingestão efêmera sem forçar
+  re-download redundante quando o dado bruto já foi espelhado.
+
 ## [0.10.0] - 2026-10-07
 
 ### Adicionado
