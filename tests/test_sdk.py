@@ -435,3 +435,65 @@ def test_default_client_attempts_env_override(monkeypatch):
     monkeypatch.delenv("QUANTILICA_CA_BUNDLE", raising=False)
     monkeypatch.setenv("QUANTILICA_HTTP_ATTEMPTS", "9")
     assert default_client().attempts == 9
+
+
+def test_check_entry_ephemeral_manifest_fresh(tmp_path: Path):
+    """Raw file deleted but sidecar manifest survives -> manifest-fresh skip."""
+    from quantilica.core.manifests import (
+        DownloadManifest,
+        SourceMetadata,
+        write_manifest_sidecar,
+    )
+
+    app = make_app(client=_mock_client())
+    entry = sample_list_datasets("exp")[0]
+    local = default_path_builder(tmp_path, entry, dt.date(2024, 1, 1))
+    local.parent.mkdir(parents=True, exist_ok=True)
+    write_manifest_sidecar(
+        local,
+        DownloadManifest(
+            source_id="src",
+            dataset_id="ds",
+            url=entry["url"],
+            fetched_at="2024-01-02T00:00:00+00:00",
+            sha256="0" * 64,
+            size_bytes=10,
+            source_meta=SourceMetadata(
+                etag='"abc123"',
+                last_modified="Mon, 01 Jan 2024 00:00:00 GMT",
+            ),
+        ),
+    )
+    item = app.check_entry(entry, tmp_path)
+    assert item.action == "skip-up-to-date"
+    assert item.reason == "manifest-fresh"
+    assert item.local_exists is True
+
+
+def test_check_entry_ephemeral_stale_downloads(tmp_path: Path):
+    """Sidecar with stale metadata (remote ETag differs) -> download."""
+    from quantilica.core.manifests import (
+        DownloadManifest,
+        SourceMetadata,
+        write_manifest_sidecar,
+    )
+
+    app = make_app(client=_mock_client())
+    entry = sample_list_datasets("exp")[0]
+    local = default_path_builder(tmp_path, entry, dt.date(2024, 1, 1))
+    local.parent.mkdir(parents=True, exist_ok=True)
+    write_manifest_sidecar(
+        local,
+        DownloadManifest(
+            source_id="src",
+            dataset_id="ds",
+            url=entry["url"],
+            fetched_at="2023-12-31T00:00:00+00:00",
+            sha256="0" * 64,
+            size_bytes=10,
+            source_meta=SourceMetadata(etag='"outdated"', last_modified=None),
+        ),
+    )
+    item = app.check_entry(entry, tmp_path)
+    assert item.action == "download"
+    assert item.reason == "remote-newer"

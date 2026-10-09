@@ -28,6 +28,7 @@ from quantilica.core.http import (
     resolve_verify_from_env,
 )
 from quantilica.core.logging import get_logger
+from quantilica.core.manifests import manifest_sidecar_path
 from quantilica.core.storage import (
     StampedDataRepository,
     build_stamped_filename,
@@ -166,7 +167,9 @@ class CheckPlanItem:
         remote_etag: Remote ETag header, or None.
         remote_last_modified: Remote Last-Modified header, or None.
         remote_size: Remote Content-Length, or None.
-        local_exists: Whether the local file already exists.
+        local_exists: Whether the artifact already exists locally — this
+            covers either the raw file itself or its ephemeral ``.manifest.json``
+            sidecar marker (file deleted for retention, sidecar still fresh).
         action: ``"download"`` or ``"skip-up-to-date"``.
         reason: Machine-readable reason for the action.
         entry: Original dataset entry (allows ``sync --from-plan`` round-trip).
@@ -983,9 +986,13 @@ class FetcherApp:
             size = None
         last_modified = _parse_head_date(head.headers.get("Last-Modified"))
         local = self.path_builder(output_dir, entry, last_modified)
-        exists = local.exists()
+        sidecar = manifest_sidecar_path(local)
+        exists = local.exists() or sidecar.exists()
         if exists and not is_remote_more_recent(head, local):
-            action, reason = "skip-up-to-date", "local-fresh"
+            if local.exists():
+                action, reason = "skip-up-to-date", "local-fresh"
+            else:
+                action, reason = "skip-up-to-date", "manifest-fresh"
         else:
             action = "download"
             reason = "not-present" if not exists else "remote-newer"
