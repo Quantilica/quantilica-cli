@@ -154,6 +154,10 @@ def _short_remote(item: CheckPlanItem) -> str:
     return remote
 
 
+class _ProbeNotFoundError(Exception):
+    """O GET de probe Range respondeu 404 (URL removida no servidor)."""
+
+
 @dataclass(frozen=True)
 class CheckPlanItem:
     """Freshness verdict for a single dataset entry (no download performed).
@@ -170,7 +174,8 @@ class CheckPlanItem:
         local_exists: Whether the artifact already exists locally — this
             covers either the raw file itself or its ephemeral ``.manifest.json``
             sidecar marker (file deleted for retention, sidecar still fresh).
-        action: ``"download"`` or ``"skip-up-to-date"``.
+        action: ``"download"``, ``"skip-up-to-date"`` or ``"skip-unavailable"``
+            (todas as URLs da entrada responderam 404 no HEAD).
         reason: Machine-readable reason for the action.
         entry: Original dataset entry (allows ``sync --from-plan`` round-trip).
     """
@@ -225,11 +230,7 @@ class CheckPlan:
                 _short_remote(item),
             )
         con.print(table)
-        counts: dict[str, int] = {}
-        for item in self.items:
-            counts[item.action] = counts.get(item.action, 0) + 1
-        summary = ", ".join(f"{v} {k}" for k, v in sorted(counts.items()))
-        con.print(f"[bold]{len(self.items)}[/bold] verificado(s): {summary}.")
+        con.print(self.summary_line())
 
     def to_dict(self) -> dict[str, Any]:
         """Return the JSON-serializable representation of the plan."""
@@ -255,6 +256,14 @@ class CheckPlan:
                 for it in self.items
             ],
         }
+
+    def summary_line(self) -> str:
+        """Return a one-line summary with the total and per-action counts."""
+        counts: dict[str, int] = {}
+        for item in self.items:
+            counts[item.action] = counts.get(item.action, 0) + 1
+        summary = ", ".join(f"{v} {k}" for k, v in sorted(counts.items()))
+        return f"[bold]{len(self.items)}[/bold] verificado(s): {summary}."
 
     def to_json(self) -> str:
         """Serialize the plan to a JSON string (for ``sync --from-plan``)."""
@@ -282,6 +291,7 @@ class CheckPlan:
             if not isinstance(entry, dict) or action not in (
                 "download",
                 "skip-up-to-date",
+                "skip-unavailable",
             ):
                 raise ValueError("not a check plan: invalid item")
             items.append(
@@ -332,6 +342,8 @@ def default_client() -> HttpClient:
       a path uses it as CA bundle.
     - ``QUANTILICA_HTTP_ATTEMPTS`` / ``QUANTILICA_HTTP_TIMEOUT`` /
       ``QUANTILICA_HTTP_RETRY_DELAY``: retry budget overrides.
+    - ``QUANTILICA_HTTP_MAX_RESUMES``: teto de retomadas com progresso de
+      downloads interrompidos (default do ``HttpClient`` quando ausente).
 
     Returns:
         A pre-configured HttpClient instance (browser-like WAF headers + pooling).
@@ -345,12 +357,18 @@ def default_client() -> HttpClient:
     attempts = int(os.environ.get("QUANTILICA_HTTP_ATTEMPTS", "5"))
     timeout = float(os.environ.get("QUANTILICA_HTTP_TIMEOUT", "180.0"))
     retry_base_delay = float(os.environ.get("QUANTILICA_HTTP_RETRY_DELAY", "2.0"))
+    # Só repassado quando definido: preserva o default do core.
+    extra: dict[str, Any] = {}
+    max_resumes = os.environ.get("QUANTILICA_HTTP_MAX_RESUMES", "").strip()
+    if max_resumes:
+        extra["max_resumes"] = int(max_resumes)
     return HttpClient(
         timeout=timeout,
         verify=verify,
         attempts=attempts,
         retry_base_delay=retry_base_delay,
         emulate_browser=True,
+        **extra,
     )
 
 
@@ -754,9 +772,17 @@ class FetcherApp:
         return None
 
     def _download_file(
-        self, url: str, output: Path, progress: ProgressCallback | None = None
+        self,
+        url: str,
+        output: Path,
+        progress: ProgressCallback | None = None,
+        *,
+        force: bool = False,
     ) -> Path:
         dataset_id = output.parent.name
+        # `force` só é repassado quando True: clients/subclasses antigos não
+        # precisam aceitar o kwarg.
+        extra: dict[str, Any] = {"force": True} if force else {}
         return self.client.download_with_manifest(
             url,
             output,
@@ -764,6 +790,7 @@ class FetcherApp:
             dataset_id=dataset_id,
             producer=self.name,
             progress=progress,
+            **extra,
         )
 
     def download_entry(
@@ -773,6 +800,7 @@ class FetcherApp:
         *,
         dry_run: bool = False,
         progress: ProgressCallback | None = None,
+        force: bool = False,
     ) -> Path:
         """Download one dataset entry and return the destination path.
 
@@ -781,6 +809,7 @@ class FetcherApp:
             output_dir: Destination directory.
             dry_run: If True, computes the destination path without downloading.
             progress: Optional callback to track download progress.
+            force: Se True, ignora a checagem de frescor local e baixa sempre.
 
         Returns:
             The local path where the file was (or would be) saved.
@@ -811,6 +840,10 @@ class FetcherApp:
 
                 if dry_run:
                     return output
+                if force:
+                    return self._download_file(
+                        url, output, progress=progress, force=True
+                    )
                 return self._download_file(url, output, progress=progress)
             except HttpStatusError as exc:
                 if exc.status_code == 404:
@@ -834,6 +867,8 @@ class FetcherApp:
         entries: list[dict[str, Any]],
         output_dir: Path,
         workers: int = 4,
+        *,
+        force: bool = False,
     ) -> tuple[int, int, list[tuple[str, str]]]:
         """Executes parallel download for a list of dataset entries.
 
@@ -841,6 +876,7 @@ class FetcherApp:
             entries: List of dataset entries to download.
             output_dir: The target base directory for downloads.
             workers: Maximum number of parallel downloads.
+            force: Se True, ignora a checagem de frescor local e baixa tudo.
 
         Returns:
             A tuple containing:
@@ -891,7 +927,10 @@ class FetcherApp:
             try:
                 eid = entry.get("id", "unknown")
                 with pool.acquire(description=f"[cyan]{eid}[/cyan]") as cb:
-                    self.download_entry(entry, output_dir, progress=cb)
+                    if force:
+                        self.download_entry(entry, output_dir, progress=cb, force=True)
+                    else:
+                        self.download_entry(entry, output_dir, progress=cb)
                     return True
             except Exception as exc:
                 errors.append((entry.get("id", "unknown"), str(exc)))
@@ -946,14 +985,24 @@ class FetcherApp:
 
         head = None
         head_error: Exception | None = None
+        not_found = 0
         for url in urls_to_try:
             try:
                 candidate = self.client.head(url)
             except HttpStatusError as exc:
-                if exc.status_code == 404:
-                    head_error = exc
-                    continue
                 head_error = exc
+                if exc.status_code == 404:
+                    not_found += 1
+                    continue
+                if exc.status_code in (403, 405):
+                    try:
+                        probed = self._range_probe(entry, output_dir, url, partition)
+                    except _ProbeNotFoundError:
+                        # HEAD recusado, mas o GET de probe prova que sumiu.
+                        not_found += 1
+                        continue
+                    if probed is not None:
+                        return probed
                 break
             except Exception as exc:  # noqa: BLE001 - metadata best effort
                 head_error = exc
@@ -963,6 +1012,21 @@ class FetcherApp:
 
         if head is None:
             local = self.path_builder(output_dir, entry, None)
+            if not_found == len(urls_to_try):
+                return CheckPlanItem(
+                    dataset=dataset,
+                    id=eid,
+                    url=str(entry["url"]),
+                    partition=partition,
+                    local_path=str(local),
+                    remote_etag=None,
+                    remote_last_modified=None,
+                    remote_size=None,
+                    local_exists=local.exists(),
+                    action="skip-unavailable",
+                    reason="remote-404",
+                    entry=dict(entry),
+                )
             return CheckPlanItem(
                 dataset=dataset,
                 id=eid,
@@ -1005,6 +1069,106 @@ class FetcherApp:
             remote_etag=etag,
             remote_last_modified=head.headers.get("Last-Modified"),
             remote_size=size,
+            local_exists=exists,
+            action=action,
+            reason=reason,
+            entry=dict(entry),
+        )
+
+    def entry_from_plan(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Restaura uma entry desserializada de um :class:`CheckPlan`.
+
+        O padrão retorna uma cópia rasa de ``data``, sem nenhuma
+        transformação. Sobrescreva (subclasse ou
+        atribuição de função na instância, que recebe só ``data``) quando
+        ``check_entry`` serializa objetos ricos (ex.: ``datetime``) na entry.
+
+        Args:
+            data: Entry como lida do plano JSON.
+
+        Returns:
+            A entry pronta para ``download_entry``/``path_builder``.
+        """
+        return dict(data)
+
+    def _range_probe(
+        self,
+        entry: dict[str, Any],
+        output_dir: Path,
+        url: str,
+        partition: str | None,
+    ) -> CheckPlanItem | None:
+        """Probe ``GET`` com ``Range: bytes=0-0`` quando o ``HEAD`` é recusado.
+
+        Nunca lê o corpo: se o servidor ignorar o Range e responder 200, a
+        resposta é fechada sem consumir o body.
+
+        Returns:
+            O veredito da entrada, ou ``None`` se o client não suporta
+            streaming ou o probe falhou (mantém o comportamento padrão).
+
+        Raises:
+            _ProbeNotFoundError: Se o GET de probe responder 404.
+        """
+        stream = getattr(self.client, "stream", None)
+        if not callable(stream):
+            return None
+        try:
+            with stream(
+                "GET",
+                url,
+                # identity: Content-Length/Content-Range devem refletir o
+                # tamanho real, não o comprimido.
+                headers={"Range": "bytes=0-0", "Accept-Encoding": "identity"},
+            ) as response:
+                headers = response.headers
+                status = response.status_code
+                final_url = str(response.url)
+        except HttpStatusError as exc:
+            if exc.status_code == 404:
+                raise _ProbeNotFoundError(url) from exc
+            logger.debug("[check] probe Range falhou para %s: %r", url, exc)
+            return None
+        except Exception as exc:  # noqa: BLE001 - probe é best effort
+            logger.debug("[check] probe Range falhou para %s: %r", url, exc)
+            return None
+
+        total: int | None = None
+        content_range = headers.get("Content-Range")
+        if status == 206 and content_range and "/" in content_range:
+            raw = content_range.rsplit("/", 1)[1].strip()
+            total = int(raw) if raw.isdigit() else None
+        elif status == 200:
+            encoding = (headers.get("Content-Encoding") or "identity").strip()
+            if encoding.lower() != "identity":
+                return None  # Content-Length seria o tamanho comprimido
+            raw = (headers.get("Content-Length") or "").strip()
+            total = int(raw) if raw.isdigit() else None
+        if total is None:
+            return None
+
+        last_modified = _parse_head_date(headers.get("Last-Modified"))
+        local = self.path_builder(output_dir, entry, last_modified)
+        sidecar = manifest_sidecar_path(local)
+        local_exists = local.exists()
+        exists = local_exists or sidecar.exists()
+        action, reason = "download", "range-probe"
+        if local_exists and local.stat().st_size == total:
+            action, reason = "skip-up-to-date", "size-match-range-probe"
+        elif sidecar.exists():
+            with contextlib.suppress(OSError, ValueError, AttributeError):
+                data = json.loads(sidecar.read_text(encoding="utf-8"))
+                if data.get("size_bytes") == total:
+                    action, reason = "skip-up-to-date", "size-match-range-probe"
+        return CheckPlanItem(
+            dataset=str(entry.get("group") or entry.get("id") or "datasets"),
+            id=str(entry.get("id", "unknown")),
+            url=final_url,
+            partition=partition,
+            local_path=str(local),
+            remote_etag=headers.get("ETag"),
+            remote_last_modified=headers.get("Last-Modified"),
+            remote_size=total,
             local_exists=exists,
             action=action,
             reason=reason,
@@ -1083,6 +1247,14 @@ class FetcherApp:
                     "de grupos).",
                 ),
             ] = None,
+            force: Annotated[
+                bool,
+                typer.Option(
+                    "--force",
+                    help="Ignora a checagem de frescor local (arquivo/sidecar) "
+                    "e baixa todas as entradas selecionadas (útil com --from-plan)",
+                ),
+            ] = False,
             verbose: Annotated[
                 bool, typer.Option("--verbose", help="Logs detalhados")
             ] = False,
@@ -1097,7 +1269,9 @@ class FetcherApp:
                     console.print(f"[red]Plano inválido: {exc}[/red]")
                     raise typer.Exit(1) from None
                 entries = [
-                    dict(item.entry) for item in plan.items if item.action == "download"
+                    self.entry_from_plan(dict(item.entry))
+                    for item in plan.items
+                    if item.action == "download"
                 ]
                 console.print(
                     f"[dim]Plano {from_plan}: {len(entries)} entrada(s) "
@@ -1121,9 +1295,14 @@ class FetcherApp:
                 console.print(f"\n[bold]{len(entries)}[/bold] arquivo(s) listado(s).")
                 return
 
-            downloaded, total, errors = self.download_datasets(
-                entries, actual_output, workers=workers
-            )
+            if force:
+                downloaded, total, errors = self.download_datasets(
+                    entries, actual_output, workers=workers, force=True
+                )
+            else:
+                downloaded, total, errors = self.download_datasets(
+                    entries, actual_output, workers=workers
+                )
 
             console.print(
                 f"\n[green]Concluído:[/green] {downloaded}/{total} arquivo(s) baixado(s)."
@@ -1154,6 +1333,14 @@ class FetcherApp:
                     help="Imprime o plano em JSON (para 'sync --from-plan')",
                 ),
             ] = False,
+            out: Annotated[
+                Path | None,
+                typer.Option(
+                    "--out",
+                    help="Grava o plano JSON neste arquivo (atômico) e imprime "
+                    "só um resumo; prevalece sobre --json",
+                ),
+            ] = None,
             verbose: Annotated[
                 bool, typer.Option("--verbose", help="Logs detalhados")
             ] = False,
@@ -1171,7 +1358,20 @@ class FetcherApp:
             entries = [e for g in target_groups for e in self.list_datasets(g)]
             plan = self.check_datasets(entries, actual_output, workers=workers)
 
-            if as_json:
+            if out is not None:
+                tmp = out.with_name(f".{out.name}.{os.getpid()}.tmp")
+                try:
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        tmp.write_text(plan.to_json(), encoding="utf-8")
+                        os.replace(tmp, out)
+                    finally:
+                        tmp.unlink(missing_ok=True)
+                except OSError as exc:
+                    console.print(f"[red]Falha ao gravar o plano em {out}: {exc}[/red]")
+                    raise typer.Exit(1) from None
+                console.print(f"{plan.summary_line()} Plano gravado em {out}")
+            elif as_json:
                 print(plan.to_json())
             else:
                 plan.render_table()
