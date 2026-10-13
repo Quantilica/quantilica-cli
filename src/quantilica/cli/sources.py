@@ -28,6 +28,7 @@ DEFAULT_INDEX_URL = "https://index.quantilica.com/simple/"
 SOURCES_REGISTRY: dict[str, str] = {
     "anac": "anac-fetcher",
     "anp": "anp-fetcher",
+    "b3": "b3-fetcher",
     "bcb-sgs": "bcb-sgs-fetcher",
     "comex": "comex-fetcher",
     "cvm": "cvm-fetcher",
