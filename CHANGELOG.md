@@ -13,6 +13,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ### Corrigido
 
+- `sdk`: a dica de instalação do extra de análise em `convert`, `archive` e `pipeline` mandava `pip install <fetcher>[analysis]`, que não funciona para fetchers do Fluxo B (fora do PyPI). Agora imprime `uv add '<fetcher>[analysis]' --index https://index.quantilica.com/simple/`, forma que a norma `cli-fetchers` exige.
 - `sdk`: `quantilica <fonte> list` (e o rótulo de partição do `check`/`sync`) terminava com `ValueError: Unknown format code 'd' for object of type 'str'` quando o catálogo traz `month` como string, caso do PDET (grupo capturado de regex). O mês e o semestre agora passam por `int()` antes do `:02d`, em `_partition_label`, `default_path_builder` e `list`; o `list` reutiliza `_partition_label` em vez de duplicar a lógica.
 
 ## [0.10.1] - 2026-10-08

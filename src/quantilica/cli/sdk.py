@@ -614,7 +614,8 @@ class FetcherApp:
             except ImportError:
                 console.print(
                     f"[red]Erro:[/red] convert requer extras de análise: "
-                    rf"pip install {self.name}\[analysis]"
+                    rf"uv add '{self.name}\[analysis]' "
+                    "--index https://index.quantilica.com/simple/"
                 )
                 raise typer.Exit(1) from None
             console.print(
@@ -667,7 +668,8 @@ class FetcherApp:
             except ImportError:
                 console.print(
                     f"[red]Erro:[/red] archive requer extras de análise: "
-                    rf"pip install {self.name}\[analysis]"
+                    rf"uv add '{self.name}\[analysis]' "
+                    "--index https://index.quantilica.com/simple/"
                 )
                 raise typer.Exit(1) from None
             console.print(f"[green]✓[/green] Arquivo criado em [dim]{output}[/dim].")
@@ -766,7 +768,8 @@ class FetcherApp:
             except ImportError:
                 console.print(
                     f"[red]Erro:[/red] pipeline (conversão) requer extras de "
-                    rf"análise: pip install {self.name}\[analysis]"
+                    rf"análise: uv add '{self.name}\[analysis]' "
+                    "--index https://index.quantilica.com/simple/"
                 )
                 raise typer.Exit(1) from None
             console.print(

@@ -128,7 +128,10 @@ def test_command_convert_graceful_import_error(tmp_path: Path):
     result = runner.invoke(_grouped(app.app), ["fd", "convert", "-i", str(tmp_path)])
     assert result.exit_code == 1
     assert "convert requer extras de análise" in result.output
-    assert "pip install comex-fetcher[analysis]" in result.output
+    saida = " ".join(result.output.split())  # o Rich quebra linhas em 80 colunas
+    assert "uv add 'comex-fetcher[analysis]'" in saida
+    assert "--index https://index.quantilica.com/simple/" in saida
+    assert "pip install" not in saida
 
 
 def test_command_convert_verbose_sets_logging(tmp_path: Path):
@@ -292,4 +295,7 @@ def test_command_archive_graceful_import_error(tmp_path: Path):
     result = runner.invoke(_grouped(app.app), ["fd", "archive", "-o", str(tmp_path)])
     assert result.exit_code == 1
     assert "archive requer extras de análise" in result.output
-    assert "pip install comex-fetcher[analysis]" in result.output
+    saida = " ".join(result.output.split())  # o Rich quebra linhas em 80 colunas
+    assert "uv add 'comex-fetcher[analysis]'" in saida
+    assert "--index https://index.quantilica.com/simple/" in saida
+    assert "pip install" not in saida
