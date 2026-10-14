@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import urllib.request
 from importlib.metadata import entry_points
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 
 app = typer.Typer(
     help="Gerenciar e instalar fontes de dados (fetchers) sob demanda.",
@@ -161,7 +163,7 @@ def install_package(dist_name: str, index_url: str | None = None) -> None:
             dist_name,
         ]
 
-    console.print(f"[cyan]Instalando {dist_name}...[/cyan]")
+    console.print(f"[cyan]Instalando {escape(dist_name)}...[/cyan]")
     res = subprocess.run(cmd, env=env)
     if res.returncode != 0:
         raise RuntimeError(
@@ -241,6 +243,33 @@ def _merged_registry() -> dict[str, str]:
     return {**fetch_remote_sources(), **SOURCES_REGISTRY}
 
 
+_EXTRA_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _dist_spec(dist_name: str, extras: list[str]) -> str:
+    """Monta a especificação ``dist[extra1,extra2]`` a partir do nome e dos extras.
+
+    Args:
+        dist_name: Nome da distribuição (ex: ``pdet-fetcher``).
+        extras: Nomes dos extras opcionais (ex: ``["analysis"]``).
+
+    Returns:
+        A especificação aceita por ``uv pip install``/``pip install``.
+
+    Raises:
+        typer.BadParameter: Se algum nome de extra tiver caracteres inválidos.
+    """
+    names = [e.strip() for item in extras for e in item.split(",") if e.strip()]
+    for name in names:
+        if not _EXTRA_NAME.match(name):
+            raise typer.BadParameter(
+                f"nome de extra inválido: {name!r} (use letras, números, '.', '_' ou '-')",
+                param_hint="--extra",
+            )
+    unique = list(dict.fromkeys(names))
+    return f"{dist_name}[{','.join(unique)}]" if unique else dist_name
+
+
 @app.command("install")
 def cmd_install(
     source: str = typer.Argument(
@@ -249,13 +278,26 @@ def cmd_install(
     no_exec: bool = typer.Option(
         False, "--no-exec", help="Não re-executa a CLI automaticamente após instalar"
     ),
+    extra: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--extra",
+            "-e",
+            help=(
+                "Extra opcional do pacote a instalar junto (ex: analysis, para os "
+                "comandos convert e pipeline). Repetível; aceita lista separada "
+                "por vírgula."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Instala uma fonte de dados (fetcher) sob demanda."""
     registry = _merged_registry()
     dist_name = registry.get(source, source)
+    spec = _dist_spec(dist_name, extra or [])
 
     installed_eps = get_installed_entry_points()
-    if source in installed_eps:
+    if source in installed_eps and spec == dist_name:
         console.print(f"[yellow]A fonte '{source}' já está instalada.[/yellow]")
         return
 
@@ -269,25 +311,27 @@ def cmd_install(
         raise typer.Exit(1)
 
     try:
-        install_package(dist_name)
+        install_package(spec)
     except Exception as exc:
         console.print(f"[red]Erro na instalação:[/red] {exc}")
         raise typer.Exit(1) from exc
 
-    # Gravar no arquivo de estado
+    # Gravar no arquivo de estado (sem extras: o estado registra só a distribuição)
     state = load_state()
     installed = state.setdefault("installed", {})
     installed[source] = dist_name
     save_state(state)
 
+    escaped = spec.replace("[", r"\[")
     console.print(
-        f"[green]✓ Fonte '{source}' ({dist_name}) instalada com sucesso![/green]"
+        f"[green]✓ Fonte '{source}' ({escaped}) instalada com sucesso![/green]"
     )
 
     if not no_exec:
-        # Re-executar a CLI para recarregar entry points
-        args = [arg for arg in sys.argv[1:] if arg != "--no-exec"]
-        reexec_cli(args)
+        # Re-executar a CLI para recarregar entry points. Os argumentos são
+        # refeitos sem --extra: com ele, a segunda passada reinstalaria o pacote
+        # e reexecutaria de novo, em laço.
+        reexec_cli(["install", source])
 
 
 @app.command("uninstall")

@@ -129,8 +129,8 @@ def test_command_convert_graceful_import_error(tmp_path: Path):
     assert result.exit_code == 1
     assert "convert requer extras de análise" in result.output
     saida = " ".join(result.output.split())  # o Rich quebra linhas em 80 colunas
-    assert "uv add 'comex-fetcher[analysis]'" in saida
-    assert "--index https://index.quantilica.com/simple/" in saida
+    assert "quantilica install" in saida
+    assert "--extra analysis" in saida
     assert "pip install" not in saida
 
 
@@ -229,8 +229,10 @@ def test_command_pipeline_graceful_import_error(
         _grouped(app.app), ["fd", "pipeline", "exp", "-o", str(tmp_path)]
     )
     assert result.exit_code == 1
-    assert "pipeline (conversão) requer extras de análise" in result.output
-    assert "comex-fetcher[analysis]" in result.output
+    saida = " ".join(result.output.split())
+    assert "pipeline (conversão) requer extras de análise" in saida
+    assert "quantilica install" in saida
+    assert "--extra analysis" in saida
 
 
 def test_command_pipeline_parquet_dir_defaults_to_output(
@@ -296,6 +298,6 @@ def test_command_archive_graceful_import_error(tmp_path: Path):
     assert result.exit_code == 1
     assert "archive requer extras de análise" in result.output
     saida = " ".join(result.output.split())  # o Rich quebra linhas em 80 colunas
-    assert "uv add 'comex-fetcher[analysis]'" in saida
-    assert "--index https://index.quantilica.com/simple/" in saida
+    assert "quantilica install" in saida
+    assert "--extra analysis" in saida
     assert "pip install" not in saida

@@ -14,6 +14,7 @@ import os
 import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -571,6 +572,28 @@ class FetcherApp:
         """
         self.app.command(name=name, **kwargs)(cmd_func)
 
+    def _analysis_hint(self) -> str:
+        """Comando que instala o extra ``analysis`` no ambiente desta CLI.
+
+        Usa a chave de registro do fetcher (a que ``quantilica install`` e o
+        entry point conhecem, ex.: ``td``) e, se não a encontrar, o nome da
+        distribuição, que ``quantilica install`` também aceita.
+
+        Returns:
+            Texto sem colchetes, seguro para ``console.print``.
+        """
+        key = self.name
+        try:
+            for ep in entry_points(group="quantilica.fetchers"):
+                if ep.dist is not None and ep.dist.name == self.name:
+                    key = ep.name
+                    break
+        except (
+            Exception
+        ):  # pragma: no cover - metadados quebrados não podem mascarar o erro
+            pass
+        return f"quantilica install {key} --extra analysis"
+
     def command_convert(
         self, func: Callable[[Path, Path], Any]
     ) -> Callable[[Path, Path], Any]:
@@ -614,8 +637,7 @@ class FetcherApp:
             except ImportError:
                 console.print(
                     f"[red]Erro:[/red] convert requer extras de análise: "
-                    rf"uv add '{self.name}\[analysis]' "
-                    "--index https://index.quantilica.com/simple/"
+                    f"{self._analysis_hint()}"
                 )
                 raise typer.Exit(1) from None
             console.print(
@@ -668,8 +690,7 @@ class FetcherApp:
             except ImportError:
                 console.print(
                     f"[red]Erro:[/red] archive requer extras de análise: "
-                    rf"uv add '{self.name}\[analysis]' "
-                    "--index https://index.quantilica.com/simple/"
+                    f"{self._analysis_hint()}"
                 )
                 raise typer.Exit(1) from None
             console.print(f"[green]✓[/green] Arquivo criado em [dim]{output}[/dim].")
@@ -768,8 +789,7 @@ class FetcherApp:
             except ImportError:
                 console.print(
                     f"[red]Erro:[/red] pipeline (conversão) requer extras de "
-                    rf"análise: uv add '{self.name}\[analysis]' "
-                    "--index https://index.quantilica.com/simple/"
+                    f"análise: {self._analysis_hint()}"
                 )
                 raise typer.Exit(1) from None
             console.print(

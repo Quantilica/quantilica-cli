@@ -7,13 +7,18 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+### Adicionado
+
+- `quantilica install <fonte> --extra <nome>` (`-e`, repetível, aceita lista separada por vírgula): instala `<dist>[<extra>]` no ambiente da CLI, por exemplo `quantilica install pdet --extra analysis` para habilitar `convert` e `pipeline`. Funciona também em fonte já instalada. O estado continua registrando só a distribuição, e o re-exec pós-instalação não repete `--extra`, para não reinstalar em laço. Nomes de extra inválidos saem com código 2.
+
 ### Removido
 
 - `quantilica.cli.progress` (`file_progress`, `batch_progress`): módulo morto que nunca importou. Fazia `from .http import ProgressCallback` (não existe em `quantilica.cli`; o tipo vive em `quantilica.core.http`) e usava `tqdm`, que não é dependência do pacote. Nenhum fetcher o importava; o progresso real é Rich (`quantilica.cli.ui.make_download_progress`, `make_batch_progress`, `ProgressPool`).
 
 ### Corrigido
 
-- `sdk`: a dica de instalação do extra de análise em `convert`, `archive` e `pipeline` mandava `pip install <fetcher>[analysis]`, que não funciona para fetchers do Fluxo B (fora do PyPI). Agora imprime `uv add '<fetcher>[analysis]' --index https://index.quantilica.com/simple/`, forma que a norma `cli-fetchers` exige.
+- `install_package` imprimia `Instalando pdet-fetcher...` sem o `[analysis]`: o Rich tratava o colchete como marcação. Agora o nome é escapado.
+- `sdk`: a dica de extra ausente em `convert`, `archive` e `pipeline` mandava `pip install <fetcher>[analysis]`, que não funciona para fetchers do Fluxo B (fora do PyPI). Agora imprime `quantilica install <chave> --extra analysis`, com a chave de registro resolvida pelo entry point (por exemplo `td` para `tesouro-direto-fetcher`).
 - `sdk`: `quantilica <fonte> list` (e o rótulo de partição do `check`/`sync`) terminava com `ValueError: Unknown format code 'd' for object of type 'str'` quando o catálogo traz `month` como string, caso do PDET (grupo capturado de regex). O mês e o semestre agora passam por `int()` antes do `:02d`, em `_partition_label`, `default_path_builder` e `list`; o `list` reutiliza `_partition_label` em vez de duplicar a lógica.
 
 ## [0.10.1] - 2026-10-08
