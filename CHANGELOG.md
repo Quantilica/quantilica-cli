@@ -5,11 +5,20 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
-## [Não lançado]
+## [0.11.0] - 2026-10-14
 
 ### Adicionado
 
+- `sync --force` (e `force` keyword-only em `download_datasets`, `download_entry` e `_download_file`, repassado ao cliente só quando `True`): baixa mesmo com o local atualizado.
+- `check --out PATH`: grava o plano JSON de forma atômica e imprime só um resumo; `OSError` sai com código 1.
+- `check`: `HEAD` com 403 ou 405 passa a um probe `GET` com `Range: bytes=0-0` e `Accept-Encoding: identity` (tamanho via `Content-Range`, corpo nunca lido); URL que dá 404 no `HEAD` e no probe vira a ação `skip-unavailable`, aceita por `CheckPlan.from_dict`.
+- `FetcherApp.entry_from_plan`: gancho para fetchers que serializam objetos ricos na entrada do plano.
+- `default_client` lê `QUANTILICA_HTTP_MAX_RESUMES` (opcional), repassado como `max_resumes` ao `HttpClient`.
 - `quantilica install <fonte> --extra <nome>` (`-e`, repetível, aceita lista separada por vírgula): instala `<dist>[<extra>]` no ambiente da CLI, por exemplo `quantilica install pdet --extra analysis` para habilitar `convert` e `pipeline`. Funciona também em fonte já instalada. O estado continua registrando só a distribuição, e o re-exec pós-instalação não repete `--extra`, para não reinstalar em laço. Nomes de extra inválidos saem com código 2.
+
+### Alterado
+
+- Piso de `quantilica-core` elevado para `>=0.11.0` (símbolo usado: `max_resumes` em `HttpClient`).
 
 ### Removido
 
