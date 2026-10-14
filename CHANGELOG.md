@@ -7,6 +7,10 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+### Removido
+
+- `quantilica.cli.progress` (`file_progress`, `batch_progress`): módulo morto que nunca importou. Fazia `from .http import ProgressCallback` (não existe em `quantilica.cli`; o tipo vive em `quantilica.core.http`) e usava `tqdm`, que não é dependência do pacote. Nenhum fetcher o importava; o progresso real é Rich (`quantilica.cli.ui.make_download_progress`, `make_batch_progress`, `ProgressPool`).
+
 ### Corrigido
 
 - `sdk`: `quantilica <fonte> list` (e o rótulo de partição do `check`/`sync`) terminava com `ValueError: Unknown format code 'd' for object of type 'str'` quando o catálogo traz `month` como string, caso do PDET (grupo capturado de regex). O mês e o semestre agora passam por `int()` antes do `:02d`, em `_partition_label`, `default_path_builder` e `list`; o `list` reutiliza `_partition_label` em vez de duplicar a lógica.
