@@ -125,12 +125,22 @@ class SyncPlan:
         )
 
 
+def _two_digits(value: Any) -> str:
+    """Format a month/semester as two digits, accepting ``int`` or numeric ``str``.
+
+    Catalogs built from filename regexes (e.g. PDET) carry the month as the
+    captured string (``"03"``), while others use ``int``; ``f"{x:02d}"`` only
+    works for the latter.
+    """
+    return f"{int(value):02d}"
+
+
 def _partition_label(entry: dict[str, Any]) -> str | None:
     """Human-readable partition label for a dataset entry."""
     if entry.get("semester") is not None:
         return f"{entry['year']}-S{entry['semester']}"
     if entry.get("month") is not None:
-        return f"{entry['year']}-{entry['month']:02d}"
+        return f"{entry['year']}-{_two_digits(entry['month'])}"
     if entry.get("year") is not None:
         return str(entry["year"])
     return None
@@ -414,14 +424,14 @@ class DataRepository(StampedDataRepository):
         if year is not None and semester is not None:
             filename = build_stamped_filename(
                 slug,
-                f"{year}-{semester:02d}",
+                f"{year}-{_two_digits(semester)}",
                 ext=ext,
                 timestamp=last_modified,
             )
         elif year is not None and month is not None:
             filename = build_stamped_filename(
                 slug,
-                f"{year}-{month:02d}",
+                f"{year}-{_two_digits(month)}",
                 ext=ext,
                 timestamp=last_modified,
             )
@@ -1393,17 +1403,9 @@ class FetcherApp:
                     title=f"[bold]{group_id}[/bold] — {group_info.get('name', '')}",
                 )
                 for entry in self.list_datasets(group_id):
-                    if entry.get("semester") is not None:
-                        partition = f"{entry['year']}-S{entry['semester']}"
-                    elif entry.get("month") is not None:
-                        partition = f"{entry['year']}-{entry['month']:02d}"
-                    elif entry.get("year") is not None:
-                        partition = str(entry["year"])
-                    else:
-                        partition = "—"
                     table.add_row(
                         entry.get("id", ""),
-                        partition,
+                        _partition_label(entry) or "—",
                         entry.get("ext", ""),
                         entry.get("url", ""),
                     )
