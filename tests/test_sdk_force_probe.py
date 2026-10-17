@@ -485,3 +485,38 @@ def test_head_403_probe_500_stays_download(tmp_path: Path):
     item = _probe_app(handler).check_entry(ENTRY, tmp_path)
     assert item.action == "download"
     assert item.reason.startswith("metadata-unavailable")
+
+
+@pytest.mark.parametrize(
+    ("statuses", "action", "reason"),
+    [
+        # 503 transitório e depois 404 → removida de fato
+        ([503, 404], "skip-unavailable", "remote-404"),
+        # 429 e depois 206 → metadados pelo Range
+        ([429, 206], "download", "range-probe"),
+        # 503 persistente → desiste após as tentativas
+        ([503, 503, 503], "download", "metadata-unavailable"),
+        # 403 no GET não é transitório → sem nova tentativa
+        ([403], "download", "metadata-unavailable"),
+    ],
+)
+def test_probe_retries_transient_status(
+    tmp_path: Path, monkeypatch, statuses, action, reason
+):
+    from quantilica.cli import sdk
+
+    monkeypatch.setattr(sdk, "_PROBE_BACKOFF_S", 0.0)
+    gets: list[int] = []
+
+    def handler(request):
+        if request.method == "HEAD":
+            return httpx2.Response(403)
+        status = statuses[min(len(gets), len(statuses) - 1)]
+        gets.append(status)
+        headers = {"Content-Range": "bytes 0-0/10"} if status == 206 else {}
+        return httpx2.Response(status, headers=headers)
+
+    item = _probe_app(handler).check_entry(ENTRY, tmp_path)
+    assert item.action == action
+    assert item.reason.startswith(reason)
+    assert gets == statuses

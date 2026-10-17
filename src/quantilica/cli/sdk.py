@@ -12,6 +12,7 @@ import email.utils
 import json
 import os
 import threading
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from importlib.metadata import entry_points
@@ -163,6 +164,12 @@ def _short_remote(item: CheckPlanItem) -> str:
     if item.remote_size:
         remote += f" ({item.remote_size} B)"
     return remote
+
+
+# Probe Range: novas tentativas em status transitório antes de desistir.
+_PROBE_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+_PROBE_ATTEMPTS = 3
+_PROBE_BACKOFF_S = 1.0
 
 
 class _ProbeNotFoundError(Exception):
@@ -1146,25 +1153,36 @@ class FetcherApp:
         stream = getattr(self.client, "stream", None)
         if not callable(stream):
             return None
-        try:
-            with stream(
-                "GET",
-                url,
-                # identity: Content-Length/Content-Range devem refletir o
-                # tamanho real, não o comprimido.
-                headers={"Range": "bytes=0-0", "Accept-Encoding": "identity"},
-            ) as response:
-                headers = response.headers
-                status = response.status_code
-                final_url = str(response.url)
-        except HttpStatusError as exc:
-            if exc.status_code == 404:
-                raise _ProbeNotFoundError(url) from exc
-            logger.debug("[check] probe Range falhou para %s: %r", url, exc)
-            return None
-        except Exception as exc:  # noqa: BLE001 - probe é best effort
-            logger.debug("[check] probe Range falhou para %s: %r", url, exc)
-            return None
+        for attempt in range(1, _PROBE_ATTEMPTS + 1):
+            try:
+                with stream(
+                    "GET",
+                    url,
+                    # identity: Content-Length/Content-Range devem refletir o
+                    # tamanho real, não o comprimido.
+                    headers={"Range": "bytes=0-0", "Accept-Encoding": "identity"},
+                ) as response:
+                    headers = response.headers
+                    status = response.status_code
+                    final_url = str(response.url)
+                break
+            except HttpStatusError as exc:
+                if exc.status_code == 404:
+                    raise _ProbeNotFoundError(url) from exc
+                # 429/5xx transitório (ex.: 503 intermitente do gov.br): sem
+                # nova tentativa, uma URL removida viraria "download" e falharia
+                # com 404 no sync.
+                if (
+                    exc.status_code in _PROBE_RETRY_STATUSES
+                    and attempt < _PROBE_ATTEMPTS
+                ):
+                    time.sleep(_PROBE_BACKOFF_S * attempt)
+                    continue
+                logger.debug("[check] probe Range falhou para %s: %r", url, exc)
+                return None
+            except Exception as exc:  # noqa: BLE001 - probe é best effort
+                logger.debug("[check] probe Range falhou para %s: %r", url, exc)
+                return None
 
         total: int | None = None
         content_range = headers.get("Content-Range")
