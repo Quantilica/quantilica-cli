@@ -23,6 +23,7 @@ import typer
 from quantilica.core.exceptions import FetchError
 from quantilica.core.ftp import FtpClient
 from quantilica.core.http import (
+    DEFAULT_RETRY_EXCEPTIONS,
     HttpClient,
     HttpStatusError,
     ProgressCallback,
@@ -166,7 +167,8 @@ def _short_remote(item: CheckPlanItem) -> str:
     return remote
 
 
-# Probe Range: novas tentativas em status transitório antes de desistir.
+# Probe Range: novas tentativas em status ou erro de transporte transitório
+# (``DEFAULT_RETRY_EXCEPTIONS``) antes de desistir.
 _PROBE_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 _PROBE_ATTEMPTS = 3
 _PROBE_BACKOFF_S = 1.0
@@ -1169,20 +1171,26 @@ class FetcherApp:
             except HttpStatusError as exc:
                 if exc.status_code == 404:
                     raise _ProbeNotFoundError(url) from exc
-                # 429/5xx transitório (ex.: 503 intermitente do gov.br): sem
-                # nova tentativa, uma URL removida viraria "download" e falharia
-                # com 404 no sync.
-                if (
-                    exc.status_code in _PROBE_RETRY_STATUSES
-                    and attempt < _PROBE_ATTEMPTS
-                ):
-                    time.sleep(_PROBE_BACKOFF_S * attempt)
-                    continue
-                logger.debug("[check] probe Range falhou para %s: %r", url, exc)
-                return None
+                failure: Exception = exc
+                retryable = exc.status_code in _PROBE_RETRY_STATUSES
+            except DEFAULT_RETRY_EXCEPTIONS as exc:
+                failure, retryable = exc, True
             except Exception as exc:  # noqa: BLE001 - probe é best effort
-                logger.debug("[check] probe Range falhou para %s: %r", url, exc)
-                return None
+                failure, retryable = exc, False
+            # 429/5xx ou erro de transporte transitório (ex.: 503 intermitente
+            # do gov.br): sem nova tentativa, uma URL removida viraria
+            # "download" e falharia com 404 no sync.
+            if retryable and attempt < _PROBE_ATTEMPTS:
+                time.sleep(_PROBE_BACKOFF_S * attempt)
+                continue
+            # WARNING: o cron não roda com --verbose e precisa registrar a causa.
+            logger.warning(
+                "[check] probe Range falhou para %s após %d tentativa(s): %r",
+                url,
+                attempt,
+                failure,
+            )
+            return None
 
         total: int | None = None
         content_range = headers.get("Content-Range")

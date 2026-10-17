@@ -520,3 +520,57 @@ def test_probe_retries_transient_status(
     assert item.action == action
     assert item.reason.startswith(reason)
     assert gets == statuses
+
+
+@pytest.mark.parametrize(
+    ("failures", "action", "reason"),
+    [
+        # timeout transitório e depois 404 → removida de fato
+        ([httpx2.ReadTimeout], "skip-unavailable", "remote-404"),
+        # conexão derrubada e depois 206 → metadados pelo Range
+        ([httpx2.RemoteProtocolError], "download", "range-probe"),
+        # erro de transporte persistente → desiste após as tentativas
+        ([httpx2.ConnectError] * 3, "download", "metadata-unavailable"),
+    ],
+)
+def test_probe_retries_transport_errors(
+    tmp_path: Path, monkeypatch, failures, action, reason
+):
+    from quantilica.cli import sdk
+
+    monkeypatch.setattr(sdk, "_PROBE_BACKOFF_S", 0.0)
+    gets: list[int] = []
+
+    def handler(request):
+        if request.method == "HEAD":
+            return httpx2.Response(403)
+        gets.append(1)
+        if len(gets) <= len(failures):
+            raise failures[len(gets) - 1]("transitório", request=request)
+        if reason == "remote-404":
+            return httpx2.Response(404)
+        return httpx2.Response(206, headers={"Content-Range": "bytes 0-0/10"})
+
+    item = _probe_app(handler).check_entry(ENTRY, tmp_path)
+    assert item.action == action
+    assert item.reason.startswith(reason)
+    assert len(gets) == min(len(failures) + 1, 3)
+
+
+def test_probe_failure_logs_warning_with_cause(tmp_path: Path, monkeypatch):
+    from quantilica.cli import sdk
+
+    monkeypatch.setattr(sdk, "_PROBE_BACKOFF_S", 0.0)
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        sdk.logger, "warning", lambda msg, *args: warnings.append(msg % args)
+    )
+
+    def handler(request):
+        return httpx2.Response(403 if request.method == "HEAD" else 503)
+
+    item = _probe_app(handler).check_entry(ENTRY, tmp_path)
+    assert item.reason.startswith("metadata-unavailable")
+    assert len(warnings) == 1
+    assert "após 3 tentativa(s)" in warnings[0]
+    assert "503" in warnings[0]
