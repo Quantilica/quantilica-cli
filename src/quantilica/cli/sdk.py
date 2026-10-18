@@ -522,6 +522,9 @@ class FetcherApp:
             :func:`default_path_builder` (canonical ``DataRepository`` layout).
         default_output: Default output directory path.
         client: HTTP or FTP client instance. Defaults to default_client().
+        source_id: Source ID recorded in download manifests. Defaults to
+            ``name`` without the ``-fetcher`` suffix. When ``default_output``
+            is omitted it is derived as ``/data/{source_id}``.
         build_default_commands: If True (default), registers the built-in
             ``sync`` and ``list`` commands. Set to False to register only
             custom commands via :meth:`attach_command`.
@@ -539,6 +542,7 @@ class FetcherApp:
         path_builder: Callable[[Path, dict[str, Any], dt.date | None], Path]
         | None = None,
         default_output: Path | None = None,
+        source_id: str | None = None,
         client: HttpClient | FtpClient | None = None,
         build_default_commands: bool = True,
     ):
@@ -548,9 +552,10 @@ class FetcherApp:
         self.aliases = aliases_dict
         self.list_datasets = list_datasets
         self.path_builder = path_builder or default_path_builder
-        self.default_output = default_output or Path(
-            f"/data/{name.replace('-fetcher', '')}"
-        )
+        # source_id explícito vence; senão deriva de `name` sem o sufixo
+        # "-fetcher" (comportamento histórico).
+        self.source_id = source_id or name.replace("-fetcher", "")
+        self.default_output = default_output or Path(f"/data/{self.source_id}")
         self.client = client or default_client()
 
         self.all_group_keys = list(self.groups.keys())
@@ -828,7 +833,7 @@ class FetcherApp:
         return self.client.download_with_manifest(
             url,
             output,
-            source_id=self.name.replace("-fetcher", ""),
+            source_id=self.source_id,
             dataset_id=dataset_id,
             producer=self.name,
             progress=progress,

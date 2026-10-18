@@ -497,3 +497,20 @@ def test_check_entry_ephemeral_stale_downloads(tmp_path: Path):
     item = app.check_entry(entry, tmp_path)
     assert item.action == "download"
     assert item.reason == "remote-newer"
+
+
+def test_source_id_defaults_to_name_without_suffix():
+    app = make_app()
+    assert app.source_id == "comex"
+    assert app.default_output == Path("/data/comex")
+
+
+def test_explicit_source_id_derives_default_output():
+    app = make_app(source_id="custom")
+    assert app.source_id == "custom"
+    assert app.default_output == Path("/data/custom")
+
+
+def test_explicit_default_output_wins_over_source_id(tmp_path: Path):
+    app = make_app(source_id="custom", default_output=tmp_path)
+    assert app.default_output == tmp_path
