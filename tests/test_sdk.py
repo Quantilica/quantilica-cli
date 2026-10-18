@@ -514,3 +514,69 @@ def test_explicit_source_id_derives_default_output():
 def test_explicit_default_output_wins_over_source_id(tmp_path: Path):
     app = make_app(source_id="custom", default_output=tmp_path)
     assert app.default_output == tmp_path
+
+
+def test_check_datasets_isolates_entry_failure(tmp_path: Path, monkeypatch):
+    """Uma entrada que levanta (ex.: OSError) não derruba o check inteiro."""
+    monkeypatch.setattr("quantilica.cli.sdk.time.sleep", lambda _s: None)
+    app = make_app(
+        client=HttpClient(
+            attempts=1,
+            transport=httpx2.MockTransport(lambda r: httpx2.Response(200)),
+        )
+    )
+    entries = sample_list_datasets("exp")
+    calls: dict[str, int] = {}
+    real = app.check_entry
+
+    def flaky(entry, output_dir):
+        key = str(entry["id"])
+        calls[key] = calls.get(key, 0) + 1
+        if key == str(entries[0]["id"]):
+            raise FileExistsError(17, "File exists", "/data")
+        return real(entry, output_dir)
+
+    monkeypatch.setattr(app, "check_entry", flaky)
+    plan = app.check_datasets(entries, tmp_path)
+    assert len(plan.items) == len(entries)
+    bad = next(i for i in plan.items if i.id == str(entries[0]["id"]))
+    assert bad.action == "download"
+    assert bad.reason.startswith("check-error: FileExistsError")
+    assert calls[str(entries[0]["id"])] == 2  # uma nova tentativa
+
+
+def test_check_datasets_retry_recovers_transient_failure(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("quantilica.cli.sdk.time.sleep", lambda _s: None)
+    app = make_app(
+        client=HttpClient(
+            attempts=1,
+            transport=httpx2.MockTransport(lambda r: httpx2.Response(200)),
+        )
+    )
+    entries = sample_list_datasets("exp")[:1]
+    real = app.check_entry
+    state = {"n": 0}
+
+    def once(entry, output_dir):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise OSError("transiente")
+        return real(entry, output_dir)
+
+    monkeypatch.setattr(app, "check_entry", once)
+    plan = app.check_datasets(entries, tmp_path)
+    assert plan.items[0].reason != "" and not plan.items[0].reason.startswith(
+        "check-error"
+    )
+
+
+def test_check_entry_403_head_without_probe_support_downloads(tmp_path: Path):
+    """HEAD 403 e probe Range 403 → download (nunca exceção/exit 1)."""
+    app = make_app(
+        client=HttpClient(
+            attempts=1,
+            transport=httpx2.MockTransport(lambda r: httpx2.Response(403)),
+        )
+    )
+    item = app.check_entry(sample_list_datasets("exp")[0], tmp_path)
+    assert item.action == "download"

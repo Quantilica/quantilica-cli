@@ -1239,6 +1239,45 @@ class FetcherApp:
             entry=dict(entry),
         )
 
+    def _check_entry_isolated(
+        self, entry: dict[str, Any], output_dir: Path
+    ) -> CheckPlanItem:
+        """Run :meth:`check_entry` without letting one entry abort the check.
+
+        An unexpected error (e.g. ``OSError`` while building the local path)
+        is retried once; if it persists the entry becomes a conservative
+        ``download`` verdict, so the plan still covers every other entry
+        instead of the whole ``check`` exiting 1.
+        """
+        for attempt in (1, 2):
+            try:
+                return self.check_entry(entry, output_dir)
+            except Exception as exc:  # noqa: BLE001 - isolate per entry
+                failure = exc
+                if attempt == 1:
+                    time.sleep(1.0)
+        eid = str(entry.get("id", "unknown"))
+        logger.warning(
+            "[check] falha ao verificar %s (%s: %s); marcada para download",
+            eid,
+            type(failure).__name__,
+            failure,
+        )
+        return CheckPlanItem(
+            dataset=str(entry.get("group") or entry.get("id") or "datasets"),
+            id=eid,
+            url=str(entry.get("url", "")),
+            partition=_partition_label(entry),
+            local_path="",
+            remote_etag=None,
+            remote_last_modified=None,
+            remote_size=None,
+            local_exists=False,
+            action="download",
+            reason=f"check-error: {type(failure).__name__}: {failure}",
+            entry=dict(entry),
+        )
+
     def check_datasets(
         self,
         entries: list[dict[str, Any]],
@@ -1258,7 +1297,7 @@ class FetcherApp:
         results: list[CheckPlanItem | None] = [None] * len(entries)
 
         def _worker(index: int, entry: dict[str, Any]) -> None:
-            results[index] = self.check_entry(entry, output_dir)
+            results[index] = self._check_entry_isolated(entry, output_dir)
             if (index + 1) % 100 == 0 or index + 1 == len(entries):
                 logger.info("[check] %d/%d verificados", index + 1, len(entries))
 
