@@ -5,6 +5,17 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.12.0] - 2026-10-19
+
+### Adicionado
+
+- `FetcherApp(source_id=...)`: `source_id` explícito, gravado nos manifests de download. Sem ele, continua derivado de `name` sem o sufixo `-fetcher`, e o `default_output` padrão passa a ser `/data/{source_id}`.
+
+### Corrigido
+
+- `check`: o probe `GET Range` tenta de novo (com backoff) em 429/5xx e em erros de transporte (`DEFAULT_RETRY_EXCEPTIONS`: timeout, reset de conexão) antes de desistir. Antes, uma falha transitória virava 404 e a URL saía como indisponível. Quando o probe desiste, a causa é logada em `WARNING` (`[check] probe Range falhou para <url> após N tentativa(s): ...`), e não mais em `DEBUG`.
+- `check`: uma exceção inesperada em uma entrada (por exemplo, `OSError` ao montar o caminho local) não aborta mais o `check` inteiro com código 1. A entrada é verificada de novo uma vez e, se falhar outra vez, vira `download` com `reason=check-error: ...`, e o plano segue cobrindo as demais.
+
 ## [0.11.0] - 2026-10-14
 
 ### Adicionado
