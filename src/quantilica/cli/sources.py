@@ -39,6 +39,7 @@ SOURCES_REGISTRY: dict[str, str] = {
     "pdet": "pdet-fetcher",
     "rtn": "rtn-fetcher",
     "sidra": "sidra-fetcher",
+    "sql": "quantilica-sql",
     "td": "tesouro-direto-fetcher",
     "tse": "tse-fetcher",
 }
