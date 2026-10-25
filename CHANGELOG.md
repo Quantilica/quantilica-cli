@@ -46,7 +46,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 ### Corrigido
 
 - `sdk`: `check_entry` considera `local.exists() or sidecar.exists()`, preservando
-  o status de `manifest-fresh` em ambientes de ingestão efêmera sem forçar
+  o status de `manifest-fresh` em ambientes sem retenção local dos arquivos sem forçar
   re-download redundante quando o dado bruto já foi espelhado.
 
 ## [0.10.0] - 2026-10-07
@@ -71,7 +71,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [0.9.1] - 2026-10-04
 
-Correção de escape inválido introduzido na v0.8.0 (Onda A.2 do SDK).
+Correção de escape inválido introduzido na v0.8.0 (extensões do SDK).
 
 ### Corrigido
 - `SyntaxWarning: invalid escape sequence '\['` nas mensagens de `convert`,
@@ -95,7 +95,7 @@ fetcher (wheel no GitHub Releases, entrada no índice PEP 503 do ecossistema).
 
 ## [0.8.0] - 2026-10-03
 
-Onda A.2 do plano `2026-10-03-padronizacao-core-e-consolidacao-fetchers` —
+Padronização do SDK e consolidação dos fetchers —
 decorators de ciclo de vida no SDK (`quantilica.cli.sdk`) e abstração de
 pré-visualização tabular de sincronização.
 
@@ -126,7 +126,7 @@ pré-visualização tabular de sincronização.
 
 ## [0.7.0] - 2026-10-02
 
-Onda 2 — extensões do SDK (`quantilica.cli.sdk`) para eliminação de
+Extensões do SDK (`quantilica.cli.sdk`) para eliminação de
 boilerplate nos fetchers (decisão
 `2026-10-02-padronizacao-e-deduplicacao-fetchers`).
 
@@ -160,7 +160,7 @@ boilerplate nos fetchers (decisão
 ## [0.3.1] - 2026-08-22
 
 ### Corrigido
-- `DEFAULT_INDEX_URL` apontado para `https://index.quantilica.com/simple/` — a URL anterior (`quantilica.com/quantilica-index/`) parou de ser servida quando o domínio passou ao portal, quebrando o `quantilica install` para fetchers fora do PyPI legado (detalhes no ADR de distribuição de 2026-08-22).
+- `DEFAULT_INDEX_URL` apontado para `https://index.quantilica.com/simple/` — a URL anterior (`quantilica.com/quantilica-index/`) parou de ser servida quando o domínio passou ao portal, quebrando o `quantilica install` para fetchers fora do PyPI legado (detalhes na decisão de distribuição de 2026-08-22).
 - `install`/`uninstall` agora mesclam o registro remoto (`sources.json`) com o registro local, resolvendo também nomes canônicos do índice (ex.: `tesouro-direto`, além de `td`).
 
 ## [0.3.0] - 2026-08-10
