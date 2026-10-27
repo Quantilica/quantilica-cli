@@ -24,6 +24,7 @@ app = typer.Typer(
 console = Console()
 
 FETCHER_GROUP = "quantilica.fetchers"
+LAKE_GROUP = "quantilica.lake"
 DEFAULT_INDEX_URL = "https://index.quantilica.com/simple/"
 
 # Mapeamento estático padrão de comandos CLI para nome das distribuições
@@ -120,6 +121,34 @@ def get_installed_entry_points() -> set[str]:
     """
     eps = entry_points(group=FETCHER_GROUP)
     return {ep.name for ep in eps}
+
+
+def get_lake_entry_points() -> list[tuple[str, str | None]]:
+    """Lista os conversores do lake (entry points ``quantilica.lake``) instalados.
+
+    Não carrega os entry points: importar o conversor exige os extras de
+    análise, e o ``doctor`` só precisa saber se ele está registrado.
+
+    Returns:
+        Pares ``(nome do entry point, nome da distribuição ou None)``.
+    """
+    return [
+        (ep.name, ep.dist.name if ep.dist is not None else None)
+        for ep in entry_points(group=LAKE_GROUP)
+    ]
+
+
+def has_lake_converter(
+    source: str, lake_eps: list[tuple[str, str | None]], dist: str | None = None
+) -> bool:
+    """Indica se a fonte tem conversor do lake registrado.
+
+    Casa pelo nome do entry point (``source_id``) ou pela distribuição da fonte.
+    """
+    dists = {d for _, d in lake_eps if d}
+    return any(name == source for name, _ in lake_eps) or (
+        dist is not None and dist in dists
+    )
 
 
 def get_index_url() -> str:
@@ -368,7 +397,10 @@ def cmd_uninstall(
 
 @app.command("doctor")
 def cmd_doctor() -> None:
-    """Verifica inconsistências entre o estado registrado e os plugins instalados."""
+    """Verifica inconsistências entre o estado registrado e os plugins instalados.
+
+    Também informa, por fonte, se há conversor do lake (``quantilica.lake``).
+    """
     state = load_state()
     registered = state.get("installed", {})
     installed_eps = get_installed_entry_points()
@@ -382,18 +414,33 @@ def cmd_doctor() -> None:
         console.print(
             "[green]✓ Todas as fontes registradas estão instaladas e ativas.[/green]"
         )
+    else:
+        console.print(
+            f"[yellow]Encontradas {len(missing)} fonte(s) registrada(s) mas ausente(s) no ambiente:[/yellow]"
+        )
+        for name, dist in missing.items():
+            console.print(f" - {name} ({dist})")
+
+        for name, dist in missing.items():
+            console.print(f"[cyan]Reinstalando {name} ({dist})...[/cyan]")
+            try:
+                install_package(dist)
+                console.print(f"[green]✓ {name} recuperado.[/green]")
+            except Exception as exc:
+                console.print(f"[red]Falha ao recuperar {name}:[/red] {exc}")
+
+    _print_lake_status(installed_eps | set(registered), registered)
+
+
+def _print_lake_status(sources: set[str], registered: dict[str, str]) -> None:
+    """Imprime, por fonte instalada/registrada, se há conversor do lake."""
+    if not sources:
         return
-
-    console.print(
-        f"[yellow]Encontradas {len(missing)} fonte(s) registrada(s) mas ausente(s) no ambiente:[/yellow]"
-    )
-    for name, dist in missing.items():
-        console.print(f" - {name} ({dist})")
-
-    for name, dist in missing.items():
-        console.print(f"[cyan]Reinstalando {name} ({dist})...[/cyan]")
-        try:
-            install_package(dist)
-            console.print(f"[green]✓ {name} recuperado.[/green]")
-        except Exception as exc:
-            console.print(f"[red]Falha ao recuperar {name}:[/red] {exc}")
+    lake_eps = get_lake_entry_points()
+    console.print("\n[bold]Lake (conversor quantilica.lake):[/bold]")
+    for name in sorted(sources):
+        dist = registered.get(name) or SOURCES_REGISTRY.get(name)
+        if has_lake_converter(name, lake_eps, dist):
+            console.print(f" - {name}: [green]✓[/green] lake: sim")
+        else:
+            console.print(f" - {name}: [dim]lake: não[/dim]")

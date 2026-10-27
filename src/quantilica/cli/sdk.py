@@ -9,6 +9,7 @@ import concurrent.futures
 import contextlib
 import datetime as dt
 import email.utils
+import inspect
 import json
 import os
 import threading
@@ -39,6 +40,7 @@ from quantilica.core.storage import (
 )
 from rich.console import Console, Group
 from rich.live import Live
+from rich.markup import escape
 from rich.rule import Rule
 from rich.table import Table
 
@@ -608,24 +610,132 @@ class FetcherApp:
             pass
         return f"quantilica install {key} --extra analysis"
 
-    def command_convert(
-        self, func: Callable[[Path, Path], Any]
-    ) -> Callable[[Path, Path], Any]:
-        """Register the standard ``convert`` subcommand.
+    def _default_lake(self) -> Path:
+        """Raiz padrão do lake: ``lake_root()`` do core, se disponível.
 
-        The generated command exposes the canonical flags (``-i/--input``,
-        ``-o/--output``, ``--verbose``) and delegates to ``func(input, output)``.
-        An ``ImportError`` propagating from ``func`` is treated as missing
-        analytical extras and exits gracefully with code 1.
+        ``quantilica.core.lake`` só existe a partir de versões recentes do core;
+        sem ele, cai no ``default_output`` (comportamento anterior).
+        """
+        try:
+            from quantilica.core.lake import lake_root
+        except ImportError:  # pragma: no cover - core sem o módulo lake
+            return self.default_output
+        return lake_root()
+
+    def _run_convert(
+        self,
+        func: Callable[..., Any],
+        input: Path,
+        lake: Path,
+        *,
+        dataset: list[str] | None = None,
+        force: bool = False,
+    ) -> Any:
+        """Chama ``func`` com os argumentos que ela aceita.
+
+        Conversores legados têm a forma ``func(input, lake)``. ``dataset`` e
+        ``force`` só são repassados (como keyword) quando a assinatura os aceita
+        ou tem ``**kwargs``. Se o usuário pediu um deles e ``func`` não o
+        aceita, sai com código 2 em vez de ignorar a opção em silêncio.
+        """
+        try:
+            params = inspect.signature(func).parameters
+        except (TypeError, ValueError):  # pragma: no cover - builtins/C callables
+            return func(input, lake)
+        var_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+        wanted = {"dataset": dataset or None, "force": force or None}
+        kwargs: dict[str, Any] = {}
+        for name, value in wanted.items():
+            if name in params or var_kw:
+                kwargs[name] = dataset if name == "dataset" else force
+            elif value is not None:
+                get_console().print(
+                    f"[red]Erro:[/red] este conversor não suporta --{name}."
+                )
+                raise typer.Exit(2)
+        return func(input, lake, **kwargs)
+
+    @staticmethod
+    def _convert_counts(result: Any) -> dict[str, Any] | None:
+        """Extrai ``converted``/``skipped``/``errors`` do retorno de um conversor.
+
+        Aceita um objeto com esses atributos ou um dicionário de contagens.
+        Valores podem ser inteiros ou coleções (usa-se o tamanho nas contagens).
+
+        Returns:
+            ``{"converted": int, "skipped": int, "errors": int,
+            "error_items": list}`` ou ``None`` se o retorno não tiver o formato.
+        """
+        keys = ("converted", "skipped", "errors")
+        if isinstance(result, dict):
+            raw = {k: result.get(k) for k in keys}
+            present = any(k in result for k in keys)
+        else:
+            raw = {k: getattr(result, k, None) for k in keys}
+            present = any(hasattr(result, k) for k in keys)
+        if not present:
+            return None
+
+        def count(value: Any) -> int:
+            if value is None:
+                return 0
+            if isinstance(value, int | float):
+                return int(value)
+            return len(value)
+
+        errors = raw["errors"]
+        items = (
+            list(errors)
+            if errors is not None and not isinstance(errors, int | float)
+            else []
+        )
+        return {
+            "converted": count(raw["converted"]),
+            "skipped": count(raw["skipped"]),
+            "errors": count(errors),
+            "error_items": items,
+        }
+
+    def _report_convert(self, result: Any, console: Console) -> bool:
+        """Imprime o sumário da conversão. Retorna ``True`` se houve erros."""
+        counts = self._convert_counts(result)
+        if counts is None:
+            return False
+        table = Table(show_header=False, box=None, pad_edge=False)
+        table.add_row("[green]convertidos[/green]", str(counts["converted"]))
+        table.add_row("[dim]pulados[/dim]", str(counts["skipped"]))
+        table.add_row(
+            "[red]erros[/red]" if counts["errors"] else "[dim]erros[/dim]",
+            str(counts["errors"]),
+        )
+        console.print(table)
+        for item in counts["error_items"]:
+            console.print(f"  [red]✗[/red] {escape(str(item))}")
+        return counts["errors"] > 0
+
+    def command_convert(self, func: Callable[..., Any]) -> Callable[..., Any]:
+        """Register the standard ``convert`` subcommand (raw → lake).
+
+        The generated command exposes ``-i/--input``, ``--lake`` (aliases
+        ``-o``/``--output``; default ``lake_root()``), ``--dataset`` (repeatable),
+        ``--force`` and ``--verbose``. ``func`` is called as
+        ``func(input, lake, dataset=..., force=...)``; the keywords are only
+        passed when its signature accepts them, so legacy ``func(input, output)``
+        converters keep working.
+
+        If ``func`` returns an object (or dict) with ``converted``, ``skipped``
+        and ``errors``, a summary is rendered and the command exits with code 1
+        when there are errors. An ``ImportError`` propagating from ``func`` is
+        treated as missing analytical extras and exits with code 1.
 
         Args:
-            func: Callable receiving ``(input, output)`` paths and performing
-                the conversion.
+            func: Callable performing the conversion.
 
         Returns:
             The original ``func`` (the method can be used as a decorator).
         """
         console = get_console()
+        default_lake = self._default_lake()
 
         @self.app.command("convert")
         def convert(
@@ -637,26 +747,47 @@ class FetcherApp:
                     help="Diretório de origem com arquivos brutos",
                 ),
             ] = self.default_output,
-            output: Annotated[
+            lake: Annotated[
                 Path,
-                typer.Option("-o", "--output", help="Diretório de destino"),
-            ] = self.default_output,
+                typer.Option(
+                    "--lake",
+                    "-o",
+                    "--output",
+                    help="Raiz do lake de destino (padrão: QUANTILICA_LAKE_DIR)",
+                ),
+            ] = default_lake,
+            dataset: Annotated[
+                list[str] | None,
+                typer.Option(
+                    "--dataset", help="Filtrar dataset(s) específico(s) a converter"
+                ),
+            ] = None,
+            force: Annotated[
+                bool,
+                typer.Option(
+                    "--force", help="Forçar reconversão mesmo se sha256 coincidir"
+                ),
+            ] = False,
             verbose: Annotated[
                 bool, typer.Option("--verbose", help="Logs detalhados")
             ] = False,
         ) -> None:
             setup_rich_logging(verbose, console=console)
             try:
-                func(input, output)
+                result = self._run_convert(
+                    func, input, lake, dataset=dataset, force=force
+                )
             except ImportError:
                 console.print(
                     f"[red]Erro:[/red] convert requer extras de análise: "
                     f"{self._analysis_hint()}"
                 )
                 raise typer.Exit(1) from None
-            console.print(
-                f"[green]✓[/green] Conversão concluída em [dim]{output}[/dim]."
-            )
+            failed = self._report_convert(result, console)
+            if failed:
+                console.print("[red]✗[/red] Conversão concluída com erros.")
+                raise typer.Exit(1)
+            console.print(f"[green]✓[/green] Conversão concluída em [dim]{lake}[/dim].")
 
         return func
 
@@ -711,26 +842,27 @@ class FetcherApp:
 
         return func
 
-    def command_pipeline(
-        self, convert_func: Callable[[Path, Path], Any]
-    ) -> Callable[[Path, Path], Any]:
+    def command_pipeline(self, convert_func: Callable[..., Any]) -> Callable[..., Any]:
         """Register the standard ``pipeline`` subcommand (sync → convert).
 
         Step 1/2 invokes the built-in ``sync`` command (same flags: groups,
-        ``-o/--output``, ``--parquet-dir``, ``--workers``, ``--dry-run``,
-        ``--verbose``). Step 2/2 invokes ``convert_func(output, parquet_dir)``.
+        ``-o/--output``, ``--workers``, ``--dry-run``, ``--verbose``) and step
+        2/2 invokes ``convert_func(output, lake)`` as in :meth:`command_convert`
+        (``--lake`` defaults to ``lake_root()``; ``--parquet-dir`` is kept as an
+        alias for backwards compatibility).
         With ``--dry-run`` the plan is only listed and the conversion step is
         skipped. An ``ImportError`` from ``convert_func`` is treated as
         missing analytical extras.
 
         Args:
-            convert_func: Callable receiving ``(output, parquet_dir)`` paths
-                and performing the conversion.
+            convert_func: Callable receiving ``(output, lake)`` paths and
+                performing the conversion.
 
         Returns:
             The original ``convert_func`` (usable as a decorator).
         """
         console = get_console()
+        default_lake = self._default_lake()
 
         @self.app.command("pipeline")
         def pipeline(
@@ -746,11 +878,12 @@ class FetcherApp:
                 Path | None,
                 typer.Option("-o", "--output", help="Diretório de saída"),
             ] = None,
-            parquet_dir: Annotated[
+            lake: Annotated[
                 Path | None,
                 typer.Option(
+                    "--lake",
                     "--parquet-dir",
-                    help="Diretório para os Parquet (padrão: igual a --output)",
+                    help="Raiz do lake de destino (padrão: QUANTILICA_LAKE_DIR)",
                 ),
             ] = None,
             workers: Annotated[
@@ -765,7 +898,7 @@ class FetcherApp:
         ) -> None:
             setup_rich_logging(verbose, console=console)
             actual_output = output or self.default_output
-            parquet_out = parquet_dir or actual_output
+            lake_out = lake or default_lake
 
             console.print(Rule("[bold]Passo 1/2: Download[/bold]"))
             sync_cmd = next(
@@ -799,16 +932,18 @@ class FetcherApp:
 
             console.print(Rule("[bold]Passo 2/2: Conversão[/bold]"))
             try:
-                convert_func(actual_output, parquet_out)
+                result = self._run_convert(convert_func, actual_output, lake_out)
             except ImportError:
                 console.print(
                     f"[red]Erro:[/red] pipeline (conversão) requer extras de "
                     f"análise: {self._analysis_hint()}"
                 )
                 raise typer.Exit(1) from None
+            if self._report_convert(result, console):
+                console.print("[red]✗[/red] Pipeline concluído com erros na conversão.")
+                raise typer.Exit(1)
             console.print(
-                f"[green]✓[/green] Pipeline concluído: Parquet em "
-                f"[dim]{parquet_out}[/dim]."
+                f"[green]✓[/green] Pipeline concluído: lake em [dim]{lake_out}[/dim]."
             )
 
         return convert_func

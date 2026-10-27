@@ -580,3 +580,142 @@ def test_check_entry_403_head_without_probe_support_downloads(tmp_path: Path):
     )
     item = app.check_entry(sample_list_datasets("exp")[0], tmp_path)
     assert item.action == "download"
+
+
+# ---------------------------------------------------------------
+# command_convert / command_pipeline: Lake Hive
+# ---------------------------------------------------------------
+
+
+def test_convert_lake_flag_and_output_alias(tmp_path: Path):
+    app = make_app()
+    calls: list[tuple[Path, Path]] = []
+
+    @app.command_convert
+    def conv(input: Path, lake: Path) -> None:
+        calls.append((input, lake))
+
+    for flag in ("--lake", "-o", "--output"):
+        result = runner.invoke(
+            _grouped(app.app),
+            ["fd", "convert", "-i", str(tmp_path), flag, str(tmp_path / "l")],
+        )
+        assert result.exit_code == 0, result.output
+    assert calls == [(tmp_path, tmp_path / "l")] * 3
+
+
+def test_convert_passes_dataset_and_force_when_accepted(tmp_path: Path):
+    app = make_app()
+    seen: dict = {}
+
+    @app.command_convert
+    def conv(input: Path, lake: Path, dataset=None, force=False) -> None:
+        seen.update(dataset=dataset, force=force)
+
+    result = runner.invoke(
+        _grouped(app.app),
+        ["fd", "convert", "--dataset", "a", "--dataset", "b", "--force"],
+    )
+    assert result.exit_code == 0, result.output
+    assert seen == {"dataset": ["a", "b"], "force": True}
+
+
+def test_convert_kwargs_func_receives_dataset_and_force():
+    app = make_app()
+    seen: dict = {}
+
+    @app.command_convert
+    def conv(input: Path, lake: Path, **kwargs) -> None:
+        seen.update(kwargs)
+
+    result = runner.invoke(_grouped(app.app), ["fd", "convert"])
+    assert result.exit_code == 0, result.output
+    assert seen == {"dataset": None, "force": False}
+
+
+def test_convert_legacy_two_arg_func_ignores_unused_defaults():
+    app = make_app()
+    calls: list[tuple[Path, Path]] = []
+
+    @app.command_convert
+    def conv(input: Path, lake: Path) -> None:
+        calls.append((input, lake))
+
+    result = runner.invoke(_grouped(app.app), ["fd", "convert"])
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("flags", [["--dataset", "x"], ["--force"]])
+def test_convert_legacy_func_rejects_requested_unsupported_flag(flags: list[str]):
+    app = make_app()
+
+    @app.command_convert
+    def conv(input: Path, lake: Path) -> None: ...
+
+    result = runner.invoke(_grouped(app.app), ["fd", "convert", *flags])
+    assert result.exit_code == 2
+    assert "não suporta" in result.output
+
+
+def test_convert_summary_from_object_and_exit_0_without_errors():
+    from types import SimpleNamespace
+
+    app = make_app()
+
+    @app.command_convert
+    def conv(input: Path, lake: Path):
+        return SimpleNamespace(converted=3, skipped=2, errors=0)
+
+    result = runner.invoke(_grouped(app.app), ["fd", "convert"])
+    assert result.exit_code == 0, result.output
+    assert "convertidos" in result.output
+    assert "pulados" in result.output
+    assert "Conversão concluída" in result.output
+
+
+def test_convert_summary_from_dict_with_errors_exits_1():
+    app = make_app()
+
+    @app.command_convert
+    def conv(input: Path, lake: Path):
+        return {"converted": ["a"], "skipped": [], "errors": ["boom [x]"]}
+
+    result = runner.invoke(_grouped(app.app), ["fd", "convert"])
+    assert result.exit_code == 1
+    assert "boom [x]" in result.output
+    assert "com erros" in result.output
+
+
+def test_convert_unrelated_return_value_is_ignored():
+    app = make_app()
+
+    @app.command_convert
+    def conv(input: Path, lake: Path):
+        return 42
+
+    result = runner.invoke(_grouped(app.app), ["fd", "convert"])
+    assert result.exit_code == 0, result.output
+    assert "convertidos" not in result.output
+
+
+def test_pipeline_lake_flag_and_parquet_dir_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    app = make_app()
+    monkeypatch.setattr(
+        app, "download_datasets", lambda entries, output_dir, workers=4: (0, 0, [])
+    )
+    calls: list[tuple[Path, Path]] = []
+
+    @app.command_pipeline
+    def conv(input: Path, lake: Path) -> None:
+        calls.append((input, lake))
+
+    for flag in ("--lake", "--parquet-dir"):
+        result = runner.invoke(
+            _grouped(app.app),
+            ["fd", "pipeline", "exp", "-o", str(tmp_path), flag, str(tmp_path / "l")],
+        )
+        assert result.exit_code == 0, result.output
+    assert calls == [(tmp_path, tmp_path / "l")] * 2

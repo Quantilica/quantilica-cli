@@ -122,6 +122,37 @@ def test_cmd_doctor(temp_config_dir: Path):
         mock_install.assert_called_once_with("rtn-fetcher")
 
 
+def test_cmd_doctor_lists_lake_converters(temp_config_dir: Path):
+    from quantilica.cli.cli import app
+
+    save_state({"installed": {"comex": "comex-fetcher", "rtn": "rtn-fetcher"}})
+    with (
+        patch(
+            "quantilica.cli.sources.get_installed_entry_points",
+            return_value={"comex", "rtn"},
+        ),
+        patch(
+            "quantilica.cli.sources.get_lake_entry_points",
+            return_value=[("comex", "comex-fetcher")],
+        ),
+    ):
+        result = CliRunner().invoke(app, ["doctor"])
+    assert result.exit_code == 0
+    assert "quantilica.lake" in result.output
+    assert "comex: ✓ lake: sim" in result.output
+    assert "rtn: lake: não" in result.output
+
+
+def test_has_lake_converter_matches_by_name_or_dist():
+    from quantilica.cli.sources import has_lake_converter
+
+    eps = [("pdet", "pdet-fetcher")]
+    assert has_lake_converter("pdet", eps)
+    assert has_lake_converter("outro", eps, "pdet-fetcher")
+    assert not has_lake_converter("outro", eps, "x-fetcher")
+    assert not has_lake_converter("outro", [])
+
+
 def test_dist_spec_monta_extras():
     from quantilica.cli.sources import _dist_spec
 

@@ -104,7 +104,10 @@ def test_command_convert_success(tmp_path: Path):
     assert "✓" in result.output
 
 
-def test_command_convert_defaults_to_default_output(tmp_path: Path):
+def test_command_convert_defaults_to_lake_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("QUANTILICA_LAKE_DIR", str(tmp_path / "lake"))
     app = make_app()
     calls: list[tuple[Path, Path]] = []
 
@@ -112,10 +115,9 @@ def test_command_convert_defaults_to_default_output(tmp_path: Path):
     def conv(input: Path, output: Path) -> None:
         calls.append((input, output))
 
-    default = app.default_output
     result = runner.invoke(_grouped(app.app), ["fd", "convert"])
     assert result.exit_code == 0, result.output
-    assert calls == [(default, default)]
+    assert calls == [(app.default_output, tmp_path / "lake")]
 
 
 def test_command_convert_graceful_import_error(tmp_path: Path):
@@ -235,9 +237,10 @@ def test_command_pipeline_graceful_import_error(
     assert "--extra analysis" in saida
 
 
-def test_command_pipeline_parquet_dir_defaults_to_output(
+def test_command_pipeline_lake_defaults_to_lake_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    monkeypatch.setenv("QUANTILICA_LAKE_DIR", str(tmp_path / "lake"))
     app = make_app()
     monkeypatch.setattr(
         app, "download_datasets", lambda entries, output_dir, workers=4: (0, 0, [])
@@ -251,7 +254,7 @@ def test_command_pipeline_parquet_dir_defaults_to_output(
     raw = tmp_path / "raw"
     result = runner.invoke(_grouped(app.app), ["fd", "pipeline", "exp", "-o", str(raw)])
     assert result.exit_code == 0, result.output
-    assert calls == [(raw, raw)]
+    assert calls == [(raw, tmp_path / "lake")]
 
 
 def test_command_pipeline_requires_sync_command():

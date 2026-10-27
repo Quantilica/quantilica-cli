@@ -5,6 +5,19 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [Unreleased]
+
+### Adicionado
+
+- `convert`: novas opções `--lake` (raiz do lake de destino; padrão `lake_root()` de `quantilica.core.lake`, ou `default_output` se o core não tiver o módulo), `--dataset` (repetível) e `--force`. `-o/--output` continua aceito como alias de `--lake`. O conversor é chamado como `func(input, lake)` e recebe `dataset=` e `force=` por keyword só quando a assinatura os aceita (ou tem `**kwargs`); pedir `--dataset`/`--force` a um conversor que não os aceita sai com código 2.
+- `convert` e `pipeline`: se o conversor devolver um objeto (ou dicionário) com `converted`, `skipped` e `errors`, o sumário é exibido, e `errors > 0` sai com código 1.
+- `pipeline --lake` (com `--parquet-dir` mantido como alias), repassado ao conversor.
+- `quantilica doctor`: informa, por fonte, se há conversor do lake registrado no entry point `quantilica.lake`.
+
+### Alterado
+
+- `pipeline`: o destino da conversão passa a ser `lake_root()` por padrão, em vez de igual a `--output`.
+
 ## [0.12.0] - 2026-10-19
 
 ### Adicionado
