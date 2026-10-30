@@ -27,7 +27,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Motor de `quantilica lake build` e `quantilica lake audit`.
-lake = ["quantilica-analytics>=0.8.0"]
+lake = ["quantilica-analytics>=0.7.1"]
 
 [project.scripts]
 quantilica = "quantilica.cli.cli:main"
