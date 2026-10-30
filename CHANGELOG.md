@@ -5,6 +5,14 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [Não lançado]
+
+### Adicionado
+
+- `quantilica lake select|build|audit`: monta e audita o lake a partir de um bruto local. `select` cria a visão com a versão vigente de cada arquivo (`--mode hardlink|symlink|copy`, `--exclude ARQ` com `sha256` ou caminhos); `build` converte a visão em Parquet por fonte e dataset, em processos separados e com retomada (`--sources`, `--workers`, `--memory`, `--threads`, `--scratch`, `--force`, `--retry-errors`, `--no-disk-check`, `--allow-sleep`), e sai com código 1 se houver erro e 130 se for interrompido; `audit` confere rodapés, proveniência, cobertura, estrutura e leitores (`--input`, `--ledger`, `--sources`, `--no-readers`, `--no-integrity`, `--exceptions`, `--rehash`, `--workers`, `--json`, `--json-file`) e sai com código 1 se houver achados. O ledger é opcional.
+- Extra `lake` (`pip install "quantilica-cli[lake]"`): traz o `quantilica-analytics`, que `build` e `audit` carregam só quando rodam; sem ele, avisam o que instalar e saem com código 1. `select` só precisa do `quantilica-core` (a partir da versão que traz `materialize_view`).
+- CI: o job de testes também roda no Windows (Python 3.12).
+
 ## [0.13.0] - 2026-10-27
 
 ### Adicionado

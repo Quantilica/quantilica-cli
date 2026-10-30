@@ -25,6 +25,10 @@ dependencies = [
     "typer>=0.15.0",
 ]
 
+[project.optional-dependencies]
+# Motor de `quantilica lake build` e `quantilica lake audit`.
+lake = ["quantilica-analytics>=0.8.0"]
+
 [project.scripts]
 quantilica = "quantilica.cli.cli:main"
 
