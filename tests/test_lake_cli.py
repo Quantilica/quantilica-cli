@@ -359,6 +359,15 @@ def test_build_ok(corpus, tmp_path: Path, fake_engine) -> None:
 
 def test_build_resumes_without_redoing(corpus, tmp_path: Path, fake_engine) -> None:
     assert runner.invoke(app, _build_args(corpus, tmp_path)).exit_code == 0
+    # A finished run does not block a new one: every task runs again.
+    again = runner.invoke(app, _build_args(corpus, tmp_path))
+    assert again.exit_code == 0, again.output
+    assert "already_done=1" not in again.stdout
+    # Drop the closing line, as an interrupted run would leave it: it resumes.
+    (state,) = sorted((tmp_path / "lake-new" / ".build").glob("*.jsonl"))[-1:]
+    lines = state.read_text().splitlines()
+    assert '"run_complete"' in lines[-1]
+    state.write_text("\n".join(lines[:-1]) + "\n")
     result = runner.invoke(app, _build_args(corpus, tmp_path))
     assert result.exit_code == 0, result.output
     assert "already_done=1" in result.stdout

@@ -233,7 +233,8 @@ def build(
     retry_errors: Annotated[
         bool,
         typer.Option(
-            "--retry-errors", help="Refaz também as tarefas que falharam antes"
+            "--retry-errors",
+            help="Refaz só as tarefas que falharam na execução mais recente",
         ),
     ] = False,
     no_disk_check: Annotated[
@@ -249,7 +250,7 @@ def build(
         ),
     ] = False,
 ) -> None:
-    """Converte a visão vigente em Parquet; retoma de onde parou."""
+    """Converte a visão vigente em Parquet; retoma uma execução interrompida."""
     try:
         from quantilica.analytics.lake_build import (
             InsufficientDiskError,

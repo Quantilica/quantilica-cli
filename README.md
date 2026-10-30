@@ -35,7 +35,7 @@ bruto local → `select` → `build` → `audit`:
 # 1. visão só com a versão vigente de cada arquivo (hardlink; cai em symlink e em cópia)
 quantilica lake select --raw /dados/bruto --out /dados/vigente --exclude excluir.txt
 
-# 2. conversão em Parquet, por fonte e dataset, em processos separados; retoma de onde parou
+# 2. conversão em Parquet, por fonte e dataset, em processos separados; retoma uma execução interrompida
 quantilica lake build --input /dados/vigente --lake /dados/lake --workers 4 --memory 12GB
 
 # 3. auditoria: rodapés, proveniência (sha256), cobertura, estrutura e leitores

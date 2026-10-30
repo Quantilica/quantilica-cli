@@ -5,6 +5,13 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [Não lançado]
+
+### Alterado
+- `quantilica lake build`: a ajuda descreve a retomada como ela funciona a partir do
+  `quantilica-analytics` 0.8.1 (só a execução interrompida é retomada; `--retry-errors`
+  refaz as tarefas que falharam na execução mais recente).
+
 ## [0.14.0] - 2026-10-30
 
 ### Adicionado
