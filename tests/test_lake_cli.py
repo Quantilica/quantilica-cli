@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -12,6 +13,13 @@ from typer.testing import CliRunner
 from quantilica.cli.cli import app
 
 runner = CliRunner()
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    """Remove códigos ANSI (o Rich pode forçar cor no CI e partir os nomes)."""
+    return _ANSI.sub("", text)
 
 
 def _need(module: str) -> None:
@@ -25,7 +33,7 @@ def test_lake_help_lists_the_three_commands() -> None:
     result = runner.invoke(app, ["lake", "--help"])
     assert result.exit_code == 0
     for name in ("select", "build", "audit"):
-        assert name in result.output
+        assert name in _plain(result.output)
 
 
 @pytest.mark.parametrize(
@@ -70,7 +78,7 @@ def test_command_help_has_every_option(command: str, options: list[str]) -> None
     result = runner.invoke(app, ["lake", command, "--help"], terminal_width=200)
     assert result.exit_code == 0
     for option in options:
-        assert option in result.output
+        assert option in _plain(result.output)
 
 
 # --- sem o analytics: mensagem clara e saída != 0 --------------------------------
