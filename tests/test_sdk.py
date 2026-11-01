@@ -90,7 +90,7 @@ def test_default_path_builder_semester_partition(tmp_path: Path):
         "semester": 2,
     }
     path = default_path_builder(tmp_path, entry, dt.date(2024, 3, 15))
-    assert path == tmp_path / "exp" / "exp-sem_2023-02@20240315.csv"
+    assert path == tmp_path / "exp" / "exp-sem_2023-S2@20240315.csv"
 
 
 def test_default_path_builder_year_only(tmp_path: Path):

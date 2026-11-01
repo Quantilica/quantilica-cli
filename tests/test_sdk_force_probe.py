@@ -54,6 +54,29 @@ def test_download_entry_force_propagates(tmp_path: Path):
     assert client.calls[1]["force"] is True
 
 
+def test_download_entry_resolves_dataset_id_from_entry(tmp_path: Path):
+    client = _RecClient()
+    app = make_app(client=client)
+    entry = {
+        "group": "caged",
+        "id": "caged-estab",
+        "url": "https://x.test/a.7z",
+        "year": 2024,
+    }
+    app.path_builder = lambda out, e, lm: out / "caged" / "2024" / "caged_2024.7z"
+    app.download_entry(entry, tmp_path)
+    assert client.calls[0]["dataset_id"] == "caged"
+
+
+def test_download_file_resolves_dataset_id_when_parent_is_year(tmp_path: Path):
+    client = _RecClient()
+    app = make_app(client=client)
+    app._download_file(
+        "https://x.test/b.7z", tmp_path / "rais" / "2024" / "rais_2024.7z"
+    )
+    assert client.calls[0]["dataset_id"] == "rais"
+
+
 def test_download_datasets_without_force_keeps_old_call(tmp_path: Path):
     app = make_app(client=HttpClient(attempts=1))
     seen: list[dict[str, Any]] = []

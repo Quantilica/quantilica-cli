@@ -35,8 +35,7 @@ from quantilica.core.logging import get_logger
 from quantilica.core.manifests import manifest_sidecar_path
 from quantilica.core.storage import (
     StampedDataRepository,
-    build_stamped_filename,
-    stamp_filename,
+    format_partition_token,
 )
 from rich.console import Console, Group
 from rich.live import Live
@@ -142,13 +141,7 @@ def _two_digits(value: Any) -> str:
 
 def _partition_label(entry: dict[str, Any]) -> str | None:
     """Human-readable partition label for a dataset entry."""
-    if entry.get("semester") is not None:
-        return f"{entry['year']}-S{entry['semester']}"
-    if entry.get("month") is not None:
-        return f"{entry['year']}-{_two_digits(entry['month'])}"
-    if entry.get("year") is not None:
-        return str(entry["year"])
-    return None
+    return format_partition_token(entry)
 
 
 def _parse_head_date(value: str | None) -> dt.date | None:
@@ -397,64 +390,11 @@ def default_client() -> HttpClient:
 class DataRepository(StampedDataRepository):
     """Canonical data repository layout shared by Quantilica fetchers.
 
-    Files are stored under ``{dataset_id}/`` directly, with stamped filenames
-    following the ecosystem convention ``{slug}[@{partition}]@{YYYYMMDD}.{ext}``
-    (see :func:`stamp_filename`). Entries follow the canonical SDK schema:
-    ``group``, ``id``, ``ext``, ``url``, and optional ``year``/``month``/
-    ``semester`` partition fields.
+    Inherits standard path resolution from
+    :class:`quantilica.core.storage.BaseDataRepository`, storing files under
+    ``{dataset_id}/`` directly with stamped filenames following the ecosystem
+    convention ``{slug}[_{partition}]@{YYYYMMDD}.{ext}``.
     """
-
-    def path_for_entry(
-        self,
-        entry: dict[str, Any],
-        *,
-        last_modified: dt.date | None = None,
-    ) -> Path:
-        """Compute the local path for a dataset entry.
-
-        Args:
-            entry: Dataset entry dictionary (canonical SDK schema).
-            last_modified: The last modified date to stamp, or None.
-
-        Returns:
-            Path: The destination path for the entry.
-
-        Raises:
-            StorageError: If a required bucket key is empty or invalid.
-        """
-        dataset_id = str(entry.get("group") or entry.get("id") or "datasets")
-        ext = entry.get("ext")
-        if not ext:
-            tail = str(entry.get("url", "")).split("?")[0].rsplit("/", 1)[-1]
-            ext = tail.rsplit(".", 1)[-1] if "." in tail else "bin"
-
-        year = entry.get("year")
-        month = entry.get("month")
-        semester = entry.get("semester")
-        slug = str(entry.get("id") or dataset_id)
-
-        if year is not None and semester is not None:
-            filename = build_stamped_filename(
-                slug,
-                f"{year}-{_two_digits(semester)}",
-                ext=ext,
-                timestamp=last_modified,
-            )
-        elif year is not None and month is not None:
-            filename = build_stamped_filename(
-                slug,
-                f"{year}-{_two_digits(month)}",
-                ext=ext,
-                timestamp=last_modified,
-            )
-        elif year is not None:
-            filename = build_stamped_filename(
-                slug, year, ext=ext, timestamp=last_modified
-            )
-        else:
-            filename = stamp_filename(slug, ext, last_modified)
-
-        return self.dataset_path(dataset_id, filename)
 
 
 def default_path_builder(
@@ -960,8 +900,18 @@ class FetcherApp:
         progress: ProgressCallback | None = None,
         *,
         force: bool = False,
+        dataset_id: str | None = None,
     ) -> Path:
-        dataset_id = output.parent.name
+        if dataset_id:
+            resolved_dataset_id = dataset_id
+        elif (
+            output.parent.name.isdigit()
+            and len(output.parent.name) == 4
+            and output.parent.parent.name not in ("", ".")
+        ):
+            resolved_dataset_id = output.parent.parent.name
+        else:
+            resolved_dataset_id = output.parent.name or self.source_id
         # `force` só é repassado quando True: clients/subclasses antigos não
         # precisam aceitar o kwarg.
         extra: dict[str, Any] = {"force": True} if force else {}
@@ -969,7 +919,7 @@ class FetcherApp:
             url,
             output,
             source_id=self.source_id,
-            dataset_id=dataset_id,
+            dataset_id=resolved_dataset_id,
             producer=self.name,
             progress=progress,
             **extra,
@@ -1004,6 +954,11 @@ class FetcherApp:
         if "fallback_urls" in entry and entry["fallback_urls"]:
             urls_to_try.extend(entry["fallback_urls"])
 
+        entry_dataset_id = (
+            str(entry.get("group") or entry.get("dataset") or entry.get("id") or "")
+            or None
+        )
+
         last_err = None
 
         for url in urls_to_try:
@@ -1022,11 +977,21 @@ class FetcherApp:
 
                 if dry_run:
                     return output
+                dl_kwargs: dict[str, Any] = {"progress": progress}
                 if force:
-                    return self._download_file(
-                        url, output, progress=progress, force=True
-                    )
-                return self._download_file(url, output, progress=progress)
+                    dl_kwargs["force"] = True
+                if entry_dataset_id is not None:
+                    try:
+                        sig = inspect.signature(self._download_file)
+                        if any(
+                            p.kind == inspect.Parameter.VAR_KEYWORD
+                            or p.name == "dataset_id"
+                            for p in sig.parameters.values()
+                        ):
+                            dl_kwargs["dataset_id"] = entry_dataset_id
+                    except (ValueError, TypeError):
+                        dl_kwargs["dataset_id"] = entry_dataset_id
+                return self._download_file(url, output, **dl_kwargs)
             except HttpStatusError as exc:
                 if exc.status_code == 404:
                     last_err = exc
