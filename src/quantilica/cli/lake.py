@@ -206,6 +206,24 @@ def build(
             "as que têm conversor)",
         ),
     ] = None,
+    dataset: Annotated[
+        str | None,
+        typer.Option(
+            "--dataset",
+            "--datasets",
+            help="Datasets a construir, separados por vírgula (padrão: todos da fonte)",
+        ),
+    ] = None,
+    profile: Annotated[
+        str | None,
+        typer.Option(
+            "--profile",
+            help=(
+                "Perfil de recursos: '96gb-batch' (6 workers x 14GB) ou "
+                "'96gb-monolithic' (1 worker x 64GB)"
+            ),
+        ),
+    ] = None,
     workers: Annotated[
         int | None,
         typer.Option("--workers", min=1, help="Processos em paralelo"),
@@ -261,12 +279,19 @@ def build(
         raise _missing_analytics("build", exc) from None
 
     wanted = _split_sources(sources)
+    wanted_datasets = (
+        [part.strip() for part in dataset.split(",") if part.strip()]
+        if dataset
+        else None
+    )
     try:
         with _log_to_stderr():
             summary = lake_build(
                 input,
                 lake,
                 sources=wanted,
+                datasets=wanted_datasets,
+                profile=profile,
                 workers=workers,
                 memory=memory,
                 threads=threads,

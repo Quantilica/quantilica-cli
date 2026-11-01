@@ -46,6 +46,8 @@ def test_lake_help_lists_the_three_commands() -> None:
                 "--input",
                 "--lake",
                 "--sources",
+                "--dataset",
+                "--profile",
                 "--workers",
                 "--memory",
                 "--threads",
