@@ -888,6 +888,113 @@ class FetcherApp:
 
         return convert_func
 
+    def command_backfill(
+        self,
+        units: Callable[[], Iterable[str]],
+        run_unit: Callable[[str], None],
+        *,
+        name: str = "backfill",
+        help: str = "Executar carga histórica (backfill) com checkpoint",
+    ) -> None:
+        """Register a backfill subcommand with persistent checkpointing (P5).
+
+        Units completed are tracked in ``<output>/.backfill/<name>.json``.
+        By default execution resumes from previous checkpoint (``--resume``);
+        use ``--restart`` to ignore existing checkpoints.
+        Handles SIGINT gracefully by persisting state before exit.
+        """
+        console = get_console()
+
+        @self.app.command(name, help=help)
+        def backfill(
+            output: Annotated[
+                Path | None,
+                typer.Option("-o", "--output", help="Diretório de saída"),
+            ] = None,
+            resume: Annotated[
+                bool,
+                typer.Option(
+                    "--resume/--restart",
+                    help="Retomar do checkpoint ou reiniciar",
+                ),
+            ] = True,
+            verbose: Annotated[
+                bool, typer.Option("--verbose", help="Logs detalhados")
+            ] = False,
+        ) -> None:
+            setup_rich_logging(verbose, console=console)
+            actual_output = output or self.default_output
+            backfill_dir = actual_output / ".backfill"
+            backfill_dir.mkdir(parents=True, exist_ok=True)
+            checkpoint_path = backfill_dir / f"{name}.json"
+
+            completed: set[str] = set()
+            failed: dict[str, str] = {}
+
+            if resume and checkpoint_path.is_file():
+                try:
+                    with open(checkpoint_path, encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict):
+                        completed = set(data.get("completed", []))
+                        failed = dict(data.get("failed", {}))
+                        console.print(
+                            f"[dim]Checkpoint carregado: {len(completed)} "
+                            f"concluídos, {len(failed)} com erro.[/dim]"
+                        )
+                except Exception as exc:
+                    console.print(
+                        f"[yellow]Aviso:[/yellow] Falha ao ler checkpoint: {exc}"
+                    )
+
+            def save_checkpoint() -> None:
+                tmp_checkpoint = checkpoint_path.with_suffix(".tmp")
+                payload = {
+                    "name": name,
+                    "updated_at": dt.datetime.now(dt.UTC).isoformat(),
+                    "completed": sorted(completed),
+                    "failed": failed,
+                }
+                with open(tmp_checkpoint, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=False, indent=2)
+                tmp_checkpoint.replace(checkpoint_path)
+
+            unit_list = list(units())
+            total = len(unit_list)
+            remaining = [u for u in unit_list if u not in completed]
+            console.print(
+                f"Iniciando {name}: {len(remaining)}/{total} unidades pendentes."
+            )
+
+            try:
+                for unit in remaining:
+                    try:
+                        run_unit(unit)
+                        completed.add(unit)
+                        failed.pop(unit, None)
+                    except Exception as exc:
+                        failed[unit] = str(exc)
+                        console.print(f"  [red]✗[/red] {unit}: {exc}")
+                    save_checkpoint()
+            except KeyboardInterrupt:
+                save_checkpoint()
+                console.print(
+                    "\n[yellow]Interrompido por SIGINT. Checkpoint salvo.[/yellow]"
+                )
+                raise typer.Exit(130) from None
+
+            save_checkpoint()
+            if failed:
+                console.print(
+                    f"[red]Backfill concluído com {len(failed)} falhas em "
+                    f"{total} unidades.[/red]"
+                )
+                raise typer.Exit(1)
+            console.print(
+                f"[green]✓[/green] Backfill {name} concluído com sucesso "
+                f"({total} unidades)."
+            )
+
     def _safe_head_date(self, url: str) -> dt.date | None:
         with contextlib.suppress(Exception):
             return self.client.head_last_modified_date(url)
