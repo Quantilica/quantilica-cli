@@ -35,6 +35,7 @@ from quantilica.core.logging import get_logger
 from quantilica.core.manifests import manifest_sidecar_path
 from quantilica.core.storage import (
     StampedDataRepository,
+    expected_format_for_path,
     format_partition_token,
 )
 from rich.console import Console, Group
@@ -1037,9 +1038,15 @@ class FetcherApp:
     def _safe_head_date(self, url: str) -> dt.date | None:
         with contextlib.suppress(Exception):
             if hasattr(self, "freshness_policy") and self.freshness_policy:
-                from quantilica.core.sync import HttpFreshnessProbe
+                from quantilica.core.sync import FreshnessPolicy, HttpFreshnessProbe
 
-                probe = HttpFreshnessProbe(self.client, policy=self.freshness_policy)
+                policy = FreshnessPolicy(self.freshness_policy)
+                if policy == FreshnessPolicy.REMOTE_ONLY:
+                    # F3: o conteúdo é a única verdade (CAS sha256); não sondar
+                    # com HEAD — o timestamp do nome virá dos metadados da
+                    # própria entrada, não de uma sondagem remota.
+                    return None
+                probe = HttpFreshnessProbe(self.client, policy=policy)
                 stat = probe.probe(url)
                 if stat and stat.last_modified:
                     return stat.last_modified.date()
@@ -1054,6 +1061,7 @@ class FetcherApp:
         *,
         force: bool = False,
         dataset_id: str | None = None,
+        expected_format: str | None = None,
     ) -> Path:
         if dataset_id:
             resolved_dataset_id = dataset_id
@@ -1068,6 +1076,25 @@ class FetcherApp:
         # `force` só é repassado quando True: clients/subclasses antigos não
         # precisam aceitar o kwarg.
         extra: dict[str, Any] = {"force": True} if force else {}
+        # F4: valida a assinatura do payload automaticamente pela extensão do
+        # destino (Soft-200 HTML, WAF e arquivos truncados). Passe
+        # ``expected_format=""`` para desativar em casos especiais. Clientes
+        # que não aceitam o kwarg (ex.: FtpClient) são ignorados.
+        fmt = (
+            expected_format
+            if expected_format is not None
+            else expected_format_for_path(output.name)
+        )
+        if fmt:
+            try:
+                sig = inspect.signature(self.client.download_with_manifest)
+            except (ValueError, TypeError):
+                sig = None
+            if sig is None or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD or p.name == "expected_format"
+                for p in sig.parameters.values()
+            ):
+                extra["expected_format"] = fmt
         return self.client.download_with_manifest(
             url,
             output,
@@ -1144,6 +1171,18 @@ class FetcherApp:
                             dl_kwargs["dataset_id"] = entry_dataset_id
                     except (ValueError, TypeError):
                         dl_kwargs["dataset_id"] = entry_dataset_id
+                entry_format = entry.get("expected_format")
+                if entry_format is not None:
+                    try:
+                        sig = inspect.signature(self._download_file)
+                        if any(
+                            p.kind == inspect.Parameter.VAR_KEYWORD
+                            or p.name == "expected_format"
+                            for p in sig.parameters.values()
+                        ):
+                            dl_kwargs["expected_format"] = str(entry_format)
+                    except (ValueError, TypeError):
+                        dl_kwargs["expected_format"] = str(entry_format)
                 return self._download_file(url, output, **dl_kwargs)
             except HttpStatusError as exc:
                 if exc.status_code == 404:
