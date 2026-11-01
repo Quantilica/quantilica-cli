@@ -486,6 +486,7 @@ class FetcherApp:
         default_output: Path | None = None,
         source_id: str | None = None,
         client: HttpClient | FtpClient | None = None,
+        freshness_policy: Any = None,
         build_default_commands: bool = True,
     ):
         self.name = name
@@ -499,6 +500,7 @@ class FetcherApp:
         self.source_id = source_id or name.replace("-fetcher", "")
         self.default_output = default_output or Path(f"/data/{self.source_id}")
         self.client = client or default_client()
+        self.freshness_policy = freshness_policy
 
         self.all_group_keys = list(self.groups.keys())
         self.all_keys = self.all_group_keys + list(self.aliases.keys())
@@ -1034,6 +1036,13 @@ class FetcherApp:
 
     def _safe_head_date(self, url: str) -> dt.date | None:
         with contextlib.suppress(Exception):
+            if hasattr(self, "freshness_policy") and self.freshness_policy:
+                from quantilica.core.sync import HttpFreshnessProbe
+
+                probe = HttpFreshnessProbe(self.client, policy=self.freshness_policy)
+                stat = probe.probe(url)
+                if stat and stat.last_modified:
+                    return stat.last_modified.date()
             return self.client.head_last_modified_date(url)
         return None
 
