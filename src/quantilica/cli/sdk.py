@@ -921,6 +921,20 @@ class FetcherApp:
             verbose: Annotated[
                 bool, typer.Option("--verbose", help="Logs detalhados")
             ] = False,
+            rateio: Annotated[
+                bool,
+                typer.Option(
+                    "--rateio",
+                    help="Carga histórica de rateio e ganhadores por município",
+                ),
+            ] = False,
+            regional: Annotated[
+                bool,
+                typer.Option(
+                    "--regional",
+                    help="Carga de séries regionais e de municípios",
+                ),
+            ] = False,
         ) -> None:
             setup_rich_logging(verbose, console=console)
             actual_output = output or self.default_output
@@ -959,17 +973,40 @@ class FetcherApp:
                     json.dump(payload, f, ensure_ascii=False, indent=2)
                 tmp_checkpoint.replace(checkpoint_path)
 
-            unit_list = list(units())
+            import inspect
+
+            kwargs: dict[str, Any] = {}
+            if rateio:
+                kwargs["rateio"] = True
+            if regional:
+                kwargs["regional"] = True
+
+            units_sig = inspect.signature(units)
+            params = units_sig.parameters
+            unit_call_args: list[Any] = []
+            if len(params) >= 1 and list(params.keys())[0] not in (
+                "rateio",
+                "regional",
+            ):
+                unit_call_args.append(actual_output)
+            unit_call_kwargs = {k: v for k, v in kwargs.items() if k in params}
+            unit_list = list(units(*unit_call_args, **unit_call_kwargs))
             total = len(unit_list)
             remaining = [u for u in unit_list if u not in completed]
             console.print(
                 f"Iniciando {name}: {len(remaining)}/{total} unidades pendentes."
             )
 
+            run_sig = inspect.signature(run_unit)
+            takes_output = len(run_sig.parameters) >= 2
+
             try:
                 for unit in remaining:
                     try:
-                        run_unit(unit)
+                        if takes_output:
+                            run_unit(unit, actual_output)
+                        else:
+                            run_unit(unit)
                         completed.add(unit)
                         failed.pop(unit, None)
                     except Exception as exc:

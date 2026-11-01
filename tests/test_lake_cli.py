@@ -364,7 +364,9 @@ def test_build_resumes_without_redoing(corpus, tmp_path: Path, fake_engine) -> N
     assert again.exit_code == 0, again.output
     assert "already_done=1" not in again.stdout
     # Drop the closing line, as an interrupted run would leave it: it resumes.
-    (state,) = sorted((tmp_path / "lake-new" / ".build").glob("*.jsonl"))[-1:]
+    from quantilica.analytics.lake_build import _load_runs
+
+    state = _load_runs(tmp_path / "lake-new" / ".build")[-1].path
     lines = state.read_text().splitlines()
     assert '"run_complete"' in lines[-1]
     state.write_text("\n".join(lines[:-1]) + "\n")

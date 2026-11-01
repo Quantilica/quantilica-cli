@@ -75,3 +75,28 @@ def test_command_backfill_failure(tmp_path: Path):
     data = json.loads(cp.read_text(encoding="utf-8"))
     assert data["completed"] == ["good"]
     assert "bad" in data["failed"]
+
+
+def test_command_backfill_flags_and_output_passing(tmp_path: Path):
+    app = _make_app()
+    received_flags = {}
+    executed_with_out = []
+
+    def get_units(output_dir, rateio: bool = False, regional: bool = False):
+        received_flags["output_dir"] = output_dir
+        received_flags["rateio"] = rateio
+        received_flags["regional"] = regional
+        return ["unit_a"]
+
+    def run_unit(unit: str, output_dir: Path):
+        executed_with_out.append((unit, output_dir))
+
+    app.command_backfill(get_units, run_unit, name="backfill")
+
+    runner = CliRunner()
+    result = runner.invoke(app.app, ["backfill", "-o", str(tmp_path), "--rateio"])
+    assert result.exit_code == 0
+    assert received_flags["rateio"] is True
+    assert received_flags["regional"] is False
+    assert received_flags["output_dir"] == tmp_path
+    assert executed_with_out == [("unit_a", tmp_path)]
