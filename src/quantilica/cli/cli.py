@@ -13,6 +13,7 @@ from rich.logging import RichHandler
 from rich.table import Table
 
 from quantilica.cli import __version__
+from quantilica.cli.catalog import app as catalog_app
 from quantilica.cli.health import cmd_health
 from quantilica.cli.lake import app as lake_app
 from quantilica.cli.manifests import app as manifests_app
@@ -34,6 +35,7 @@ app = typer.Typer(
     help="Quantilica — ferramentas de dados abertos brasileiros.",
     no_args_is_help=True,
 )
+app.add_typer(catalog_app, name="catalog")
 app.add_typer(lake_app, name="lake")
 app.add_typer(manifests_app, name="manifests")
 app.add_typer(sources_app, name="sources")
