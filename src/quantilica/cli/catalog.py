@@ -9,6 +9,7 @@ POST /api/v2/admin/catalog/sync (com autenticação via Bearer token).
 from __future__ import annotations
 
 import datetime as dt
+import decimal
 import json
 import logging
 import os
@@ -24,6 +25,33 @@ from rich.table import Table
 logger = logging.getLogger("quantilica.cli.catalog")
 console = Console()
 err_console = Console(stderr=True)
+
+
+def _sanitize_value(val: Any) -> Any:
+    """Converte valores Python/Arrow em tipos primitivos compatíveis com JSON."""
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float, str)):
+        return val
+    if isinstance(val, decimal.Decimal):
+        return float(val)
+    if hasattr(val, "isoformat"):
+        return val.isoformat()
+    if isinstance(val, bytes):
+        try:
+            return val.decode("utf-8")
+        except UnicodeDecodeError:
+            return val.hex()
+    if isinstance(val, dict):
+        return {str(k): _sanitize_value(v) for k, v in val.items()}
+    if isinstance(val, (list, tuple, set)):
+        return [_sanitize_value(x) for x in val]
+    if hasattr(val, "as_py"):
+        return _sanitize_value(val.as_py())
+    return str(val)
+
 
 app = typer.Typer(
     help="Gerenciar e sincronizar o catálogo de dados do ecossistema com o Portal.",
@@ -48,7 +76,7 @@ def _default_lake_dir() -> Path:
 
 
 def _extract_dataset_metadata(
-    descriptor_path: Path, sample_size: int = 20
+    descriptor_path: Path, sample_size: int = 20, lake_root: Path | None = None
 ) -> dict[str, Any] | None:
     """Extrai metadados, colunas e amostras de um _dataset.json e seus Parquets."""
     try:
@@ -125,7 +153,7 @@ def _extract_dataset_metadata(
                     )
                     order += 1
 
-            if sample_size > 0:
+            if sample_size > 0 and pf.num_row_groups > 0:
                 table = pf.read_row_group(0)
                 if table.num_rows > sample_size:
                     table = table.slice(0, sample_size)
@@ -135,13 +163,7 @@ def _extract_dataset_metadata(
                 for idx in range(table.num_rows):
                     row: dict[str, Any] = {}
                     for k in keys:
-                        val = pydict[k][idx]
-                        if isinstance(val, (dt.date, dt.datetime)):
-                            row[k] = val.isoformat()
-                        elif hasattr(val, "as_py"):
-                            row[k] = val.as_py()
-                        else:
-                            row[k] = val
+                        row[k] = _sanitize_value(pydict[k][idx])
                     sample_rows.append(row)
         except Exception as exc:
             logger.debug(
@@ -162,6 +184,17 @@ def _extract_dataset_metadata(
         "ativo": True,
     }
 
+    if lake_root:
+        try:
+            lake_path = str(dataset_dir.relative_to(lake_root))
+        except ValueError:
+            lake_path = f"{source_id}/{dataset_id}"
+    else:
+        try:
+            lake_path = str(dataset_dir.relative_to(dataset_dir.parent.parent))
+        except ValueError:
+            lake_path = f"{source_id}/{dataset_id}"
+
     dataset_obj = {
         "id": full_id,
         "source_id": source_id,
@@ -171,7 +204,7 @@ def _extract_dataset_metadata(
         ),
         "frequencia_temporal": "mensal",
         "granularidade_espacial": "nacional",
-        "lake_path": str(dataset_dir.relative_to(dataset_dir.parent.parent)),
+        "lake_path": lake_path,
         "manifest_sha256": None,
         "ultima_materializacao_em": ultima_materializacao,
         "total_linhas": 0,
@@ -217,7 +250,9 @@ def extract_catalog_payload(
     # Busca todos os descritores _dataset.json
     descriptor_paths = sorted(lake_dir.rglob("_dataset.json"))
     for desc_path in descriptor_paths:
-        meta = _extract_dataset_metadata(desc_path, sample_size=sample_size)
+        meta = _extract_dataset_metadata(
+            desc_path, sample_size=sample_size, lake_root=lake_dir
+        )
         if not meta:
             continue
 
@@ -250,7 +285,7 @@ def send_catalog_payload(
         f"{portal_url.rstrip('/')}/api/v2/catalog/sync",
     ]
 
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
@@ -340,8 +375,9 @@ def cmd_catalog_sync(
         f"[cyan]Varrendo Universal Hive Parquet Lake em:[/cyan] {target_lake}"
     )
 
+    safe_sample_size = max(0, min(sample_size, 20))
     payload = extract_catalog_payload(
-        target_lake, source_filter=source, sample_size=sample_size
+        target_lake, source_filter=source, sample_size=safe_sample_size
     )
 
     sources_count = len(payload.get("sources", []))
@@ -362,7 +398,9 @@ def cmd_catalog_sync(
         console.print(
             "[yellow]Modo --dry-run ativo:[/yellow] nenhum dado enviado para o portal."
         )
-        console.print_json(json.dumps(payload, ensure_ascii=False, indent=2))
+        console.print_json(
+            json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        )
         return
 
     if datasets_count == 0:

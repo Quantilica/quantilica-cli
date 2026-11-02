@@ -106,3 +106,74 @@ def test_catalog_sync_dispatch_success(tmp_path: Path) -> None:
         assert payload["sources"][0]["id"] == "anp"
         assert len(payload["datasets"]) == 1
         assert payload["datasets"][0]["id"] == "anp/precos"
+
+
+def test_catalog_sync_parquet_with_decimals_and_binary(tmp_path: Path) -> None:
+    """Verifica extração e serialização JSON segura com Decimal, bytes e data."""
+    import decimal
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    dataset_dir = tmp_path / "cvm" / "fundos_invest"
+    dataset_dir.mkdir(parents=True)
+    descriptor = {
+        "source_id": "cvm",
+        "dataset_id": "fundos_invest",
+        "alias": "fundos-invest",
+        "partition_keys": ["ano"],
+        "partition_types": {"ano": "Int64"},
+    }
+    (dataset_dir / "_dataset.json").write_text(json.dumps(descriptor), encoding="utf-8")
+
+    schema = pa.schema(
+        [
+            ("ano", pa.int64()),
+            ("cnpj", pa.string()),
+            ("vl_quota", pa.decimal128(18, 4)),
+            ("hash_doc", pa.binary(4)),
+        ]
+    )
+    tbl = pa.Table.from_arrays(
+        [
+            pa.array([2026]),
+            pa.array(["00.000.000/0001-00"]),
+            pa.array([decimal.Decimal("123.4567")], type=pa.decimal128(18, 4)),
+            pa.array([b"\xab\xcd\xef\x01"], type=pa.binary(4)),
+        ],
+        schema=schema,
+    )
+    pq.write_table(tbl, dataset_dir / "part.parquet")
+
+    res = runner.invoke(
+        app, ["catalog", "sync", "--lake-dir", str(tmp_path), "--dry-run"]
+    )
+    assert res.exit_code == 0
+    assert "cvm/fundos_invest" in res.output
+    assert "123.4567" in res.output or "123.45" in res.output
+    assert "abcdef01" in res.output
+
+
+def test_catalog_sync_empty_parquet(tmp_path: Path) -> None:
+    """Garante que parquet vazio (0 row groups) não cause exceção."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    dataset_dir = tmp_path / "anac" / "aeronaves"
+    dataset_dir.mkdir(parents=True)
+    descriptor = {
+        "source_id": "anac",
+        "dataset_id": "aeronaves",
+        "alias": "aeronaves",
+    }
+    (dataset_dir / "_dataset.json").write_text(json.dumps(descriptor), encoding="utf-8")
+
+    schema = pa.schema([("prefixo", pa.string())])
+    with pq.ParquetWriter(dataset_dir / "empty.parquet", schema):
+        pass
+
+    res = runner.invoke(
+        app, ["catalog", "sync", "--lake-dir", str(tmp_path), "--dry-run"]
+    )
+    assert res.exit_code == 0
+    assert "anac/aeronaves" in res.output
