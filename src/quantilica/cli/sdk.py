@@ -1076,6 +1076,17 @@ class FetcherApp:
         # `force` só é repassado quando True: clients/subclasses antigos não
         # precisam aceitar o kwarg.
         extra: dict[str, Any] = {"force": True} if force else {}
+        # F3: CAS-by-SHA256 deduplication for REMOTE_ONLY sources (A7 archetype).
+        # When freshness_policy is REMOTE_ONLY, we skip HEAD probe and rely on
+        # content hash comparison to avoid creating new @YYYYMMDD versions for
+        # unchanged content. Per ADR 2026-10-30 (F3).
+        try:
+            from quantilica.core.sync import FreshnessPolicy
+
+            if getattr(self, "freshness_policy", None) == FreshnessPolicy.REMOTE_ONLY:
+                extra["deduplicate_by_sha256"] = True
+        except Exception:
+            pass
         # F4: valida a assinatura do payload automaticamente pela extensão do
         # destino (Soft-200 HTML, WAF e arquivos truncados). Passe
         # ``expected_format=""`` para desativar em casos especiais. Clientes
