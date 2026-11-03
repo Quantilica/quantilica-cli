@@ -418,7 +418,7 @@ def default_path_builder(
 
 def make_resolve_groups(
     groups_dict: dict[str, dict[str, Any]],
-    aliases_dict: dict[str, list[str]],
+    aliases_dict: dict[str, list[str] | str],
 ) -> Callable[[Iterable[str] | None], list[str]]:
     """Build a resolver mapping group keys/aliases to canonical group IDs.
 
@@ -437,9 +437,10 @@ def make_resolve_groups(
     def resolve(keys: Iterable[str] | None = None) -> list[str]:
         resolved: list[str] = []
         for key in groups if keys is None else keys:
+            target = aliases.get(key)
             expanded = (
-                list(aliases[key])
-                if key in aliases
+                ([target] if isinstance(target, str) else list(target))
+                if target is not None
                 else ([key] if key in groups_dict else [])
             )
             if not expanded:

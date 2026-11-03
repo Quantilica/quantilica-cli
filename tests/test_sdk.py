@@ -237,6 +237,13 @@ def test_make_resolve_groups_none_returns_all_groups():
     assert resolve(None) == ["exp", "imp"]
 
 
+def test_make_resolve_groups_accepts_string_alias_as_single_group():
+    # Regressão: alias str virava lista de caracteres (``list("exp")``).
+    resolve = make_resolve_groups(GROUPS, {"all": "exp", "trade": ["exp", "imp"]})
+    assert resolve(["all"]) == ["exp"]
+    assert resolve(["all", "trade"]) == ["exp", "imp"]
+
+
 def test_make_resolve_groups_unknown_raises():
     resolve = make_resolve_groups(GROUPS, ALIASES)
     with pytest.raises(ValueError, match="Grupo desconhecido: 'zzz'"):
