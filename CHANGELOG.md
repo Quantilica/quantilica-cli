@@ -5,12 +5,29 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
-## [Não lançado]
+## [0.15.0] - 2026-11-03
+
+### Adicionado
+
+- `quantilica catalog sync`: novo grupo `catalog` com o comando `sync`. Lê os descritores `_dataset.json` do lake, extrai esquemas Arrow e uma amostra de linhas (`--sample-size`, no máximo 20) e envia o catálogo à API do serviço indicado por `--portal-url` e `--api-key`. `--source` limita a uma fonte, `--lake-dir` aponta o lake e `--dry-run` só mostra o conteúdo que seria enviado.
+- `quantilica lake build --profile` e `--dataset`: `--profile` aplica um perfil de memória (`96gb-batch` ou `96gb-monolithic`) e `--dataset` limita a conversão aos datasets pedidos. Exigem o extra `lake` com `quantilica-analytics>=0.9.0`.
+- SDK dos coletores: `FetcherApp.command_backfill()` registra um subcomando `backfill` de carga histórica com ponto de retomada em `<saída>/.backfill/<nome>.json` (`--resume`/`--restart`, e as opções `--rateio` e `--regional` repassadas à fonte que as declara).
+- SDK dos coletores: `FetcherApp(freshness_policy=...)` aplica a política de frescura (`quantilica.core.sync.FreshnessPolicy`). Com `remote_only` não há sonda `HEAD` e o download ativa a deduplicação por SHA-256 do `quantilica-core`.
+- SDK dos coletores: o download infere o formato esperado pela extensão (`expected_format`, também aceito em `download_entry`) e repassa a conferência de assinatura do conteúdo ao `quantilica-core` quando o cliente de download a suporta.
+- Fontes novas no mapa de comandos: `antt`, `bcb-microdados`, `capes`, `ipeadata`, `loterias`, `ons`, `pgfn`, `infosiga`, `sigtap` (também `datasus-sigtap`) e `transparencia-sp`.
 
 ### Alterado
-- `quantilica lake build`: a ajuda descreve a retomada como ela funciona a partir do
-  `quantilica-analytics` 0.8.1 (só a execução interrompida é retomada; `--retry-errors`
-  refaz as tarefas que falharam na execução mais recente).
+
+- Exige `quantilica-core>=0.16.0`; o extra `lake` exige `quantilica-analytics>=0.9.0`.
+- O caminho de destino dos arquivos baixados e o `dataset_id` gravado no manifesto passam a vir do `quantilica-core` (`path_for_entry`), os mesmos usados pelos coletores.
+- `quantilica lake build`: a ajuda descreve a retomada como ela funciona a partir do `quantilica-analytics` 0.9.0 (só a execução interrompida é retomada; `--retry-errors` refaz as tarefas que falharam na execução mais recente).
+
+### Corrigido
+
+- `make_resolve_groups` aceita alias com valor `str` (por exemplo `all` para `exp`). Antes o valor era expandido caractere a caractere e a sincronização padrão ou completa falhava com "Grupo desconhecido".
+- Com `freshness_policy=remote_only`, a deduplicação por SHA-256 só é repassada ao cliente de download que a aceita; antes o `FtpClient` recebia o argumento e a sincronização falhava com `TypeError`.
+- `catalog sync`: os tipos JSON que não são primitivos são normalizados, os grupos de linhas são dimensionados com segurança e os caminhos do lake são resolvidos de forma robusta.
+- Os testes de `--help` do `lake` não dependem mais de cor forçada no CI.
 
 ## [0.14.0] - 2026-10-30
 
