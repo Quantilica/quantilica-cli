@@ -726,3 +726,54 @@ def test_pipeline_lake_flag_and_parquet_dir_alias(
         )
         assert result.exit_code == 0, result.output
     assert calls == [(tmp_path, tmp_path / "l")] * 2
+
+
+# ---------------------------------------------------------------
+# REMOTE_ONLY: CAS por SHA-256 só vai a clientes que o aceitam
+# ---------------------------------------------------------------
+
+
+class _FtpLikeClient:
+    """Imita o FtpClient: ``download_with_manifest`` sem opções só-HTTP."""
+
+    def __init__(self) -> None:
+        self.kwargs: dict = {}
+
+    def download_with_manifest(
+        self, url, output, *, source_id, dataset_id, producer, progress=None
+    ):
+        self.kwargs = {}
+        return output
+
+
+class _HttpLikeClient:
+    def __init__(self) -> None:
+        self.kwargs: dict = {}
+
+    def download_with_manifest(self, url, output, **kwargs):
+        self.kwargs = kwargs
+        return output
+
+
+def _remote_only_app(client):
+    from quantilica.core.sync import FreshnessPolicy
+
+    app = make_app(freshness_policy=FreshnessPolicy.REMOTE_ONLY)
+    app.client = client
+    return app
+
+
+def test_remote_only_skips_dedup_kwarg_for_client_that_rejects_it(tmp_path):
+    # Regressão: FtpClient não aceita ``deduplicate_by_sha256`` e levantava
+    # TypeError sob REMOTE_ONLY.
+    client = _FtpLikeClient()
+    app = _remote_only_app(client)
+    out = app._download_file("ftp://x/f.zip", tmp_path / "f.zip")
+    assert out == tmp_path / "f.zip"
+
+
+def test_remote_only_passes_dedup_kwarg_when_client_accepts_it(tmp_path):
+    client = _HttpLikeClient()
+    app = _remote_only_app(client)
+    app._download_file("https://x/f.zip", tmp_path / "f.zip")
+    assert client.kwargs.get("deduplicate_by_sha256") is True

@@ -1084,7 +1084,11 @@ class FetcherApp:
         try:
             from quantilica.core.sync import FreshnessPolicy
 
-            if getattr(self, "freshness_policy", None) == FreshnessPolicy.REMOTE_ONLY:
+            if getattr(
+                self, "freshness_policy", None
+            ) == FreshnessPolicy.REMOTE_ONLY and self._client_accepts(
+                "deduplicate_by_sha256"
+            ):
                 extra["deduplicate_by_sha256"] = True
         except Exception:
             pass
@@ -1097,16 +1101,8 @@ class FetcherApp:
             if expected_format is not None
             else expected_format_for_path(output.name)
         )
-        if fmt:
-            try:
-                sig = inspect.signature(self.client.download_with_manifest)
-            except (ValueError, TypeError):
-                sig = None
-            if sig is None or any(
-                p.kind == inspect.Parameter.VAR_KEYWORD or p.name == "expected_format"
-                for p in sig.parameters.values()
-            ):
-                extra["expected_format"] = fmt
+        if fmt and self._client_accepts("expected_format"):
+            extra["expected_format"] = fmt
         return self.client.download_with_manifest(
             url,
             output,
@@ -1115,6 +1111,22 @@ class FetcherApp:
             producer=self.name,
             progress=progress,
             **extra,
+        )
+
+    def _client_accepts(self, kwarg: str) -> bool:
+        """Tell whether ``client.download_with_manifest`` takes ``kwarg``.
+
+        Clients such as ``FtpClient`` do not accept every HTTP-only option, so
+        optional kwargs are only forwarded when the signature allows them (or
+        when it cannot be inspected, to keep the previous behaviour).
+        """
+        try:
+            sig = inspect.signature(self.client.download_with_manifest)
+        except (ValueError, TypeError):
+            return True
+        return any(
+            p.kind == inspect.Parameter.VAR_KEYWORD or p.name == kwarg
+            for p in sig.parameters.values()
         )
 
     def download_entry(
