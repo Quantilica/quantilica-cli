@@ -7,9 +7,11 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+## [0.15.1] - 2026-11-06
+
 ### Alterado
 
-- `quantilica lake build --profile`: a ajuda passa a citar os perfis `batch` e `monolithic`; `96gb-batch` e `96gb-monolithic` continuam aceitos (depreciados no `quantilica-analytics`). Os nomes novos exigem a próxima versão do `quantilica-analytics`.
+- `quantilica lake build --profile`: a ajuda passa a citar os perfis `batch` e `monolithic`; `96gb-batch` e `96gb-monolithic` continuam aceitos (depreciados no `quantilica-analytics`). O extra `lake` passa a exigir `quantilica-analytics>=0.11.0`.
 
 ## [0.15.0] - 2026-11-03
 
