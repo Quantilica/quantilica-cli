@@ -219,8 +219,9 @@ def build(
         typer.Option(
             "--profile",
             help=(
-                "Perfil de recursos: '96gb-batch' (6 workers x 14GB) ou "
-                "'96gb-monolithic' (1 worker x 64GB)"
+                "Perfil de recursos: 'batch' (6 workers x 14GB) ou "
+                "'monolithic' (1 worker x 64GB). Os nomes antigos "
+                "'96gb-batch' e '96gb-monolithic' ainda são aceitos"
             ),
         ),
     ] = None,

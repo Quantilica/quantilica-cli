@@ -5,6 +5,12 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [Não lançado]
+
+### Alterado
+
+- `quantilica lake build --profile`: a ajuda passa a citar os perfis `batch` e `monolithic`; `96gb-batch` e `96gb-monolithic` continuam aceitos (depreciados no `quantilica-analytics`). Os nomes novos exigem a próxima versão do `quantilica-analytics`.
+
 ## [0.15.0] - 2026-11-03
 
 ### Adicionado

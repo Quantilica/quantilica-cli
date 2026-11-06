@@ -2,7 +2,7 @@
 
 Varre o Universal Hive Parquet Lake local (QUANTILICA_LAKE_DIR ou lake_root),
 lê descritores `_dataset.json`, inspeciona schemas Arrow e amostras (até 20 linhas),
-monta o payload consolidado e dispara para a VPS via:
+monta o payload consolidado e dispara para a API do Portal via:
 POST /api/v2/admin/catalog/sync (com autenticação via Bearer token).
 """
 
@@ -365,7 +365,7 @@ def cmd_catalog_sync(
         bool,
         typer.Option(
             "--dry-run",
-            help="Exibe o payload JSON extraído sem enviar HTTP para a VPS.",
+            help="Exibe o payload JSON extraído sem enviar HTTP para o Portal.",
         ),
     ] = False,
 ) -> None:
