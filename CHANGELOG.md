@@ -7,6 +7,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+## [0.16.0] - 2026-11-08
+
 ### Adicionado
 
 - `quantilica docs`: ferramentas da norma de documentação dos dados dos fetchers. `quantilica docs check <repo> [--source]` verifica a pasta `docs/` (a fonte e os datasets vêm do conversor `quantilica.lake` instalado ou, sem ele, das páginas em `docs/datasets/`) e sai com 1 se houver erro; `quantilica docs schema <fonte> --lake <dir> --out <docs/datasets> [--dataset ...]` grava os esquemas de referência lendo o lake; `quantilica docs update <repo>` reescreve a ficha técnica das páginas.
