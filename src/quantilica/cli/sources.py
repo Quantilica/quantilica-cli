@@ -287,9 +287,31 @@ def reexec_cli(args: list[str]) -> None:
         os.execv(sys.executable, [sys.executable, "-m", "quantilica.cli.cli", *args])
 
 
+def installed_declared_names() -> dict[str, str]:
+    """Ids e apelidos dos fetchers instalados que declaram ``FetcherInfo``.
+
+    Mapeia ``id/apelido -> distribuição``. Falhas na descoberta não impedem o
+    uso da tabela manual.
+    """
+    try:
+        from quantilica.cli.registry import declared_source_names
+
+        return declared_source_names()
+    except Exception:  # pragma: no cover - a reserva manual cobre
+        return {}
+
+
 def _merged_registry() -> dict[str, str]:
-    """Combina o registro remoto (sources.json) com o local; o local tem precedência."""
-    return {**fetch_remote_sources(), **SOURCES_REGISTRY}
+    """Combina o registro remoto, a tabela manual e o ``FetcherInfo`` instalado.
+
+    A tabela manual (``SOURCES_REGISTRY``) é a reserva para instalar fontes
+    ausentes; para o que está instalado, id e apelidos do ``FetcherInfo`` mandam.
+    """
+    return {
+        **fetch_remote_sources(),
+        **SOURCES_REGISTRY,
+        **installed_declared_names(),
+    }
 
 
 _EXTRA_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")

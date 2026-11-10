@@ -7,6 +7,24 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+### Adicionado
+
+- `FetcherApp(info=FetcherInfo(...))`: o fetcher declara os fatos da fonte
+  (id canônico, apelidos, órgão, licença, página, cadência). Sem `info`, um
+  `FetcherInfo` mínimo é derivado de `name` e `info_declared` fica `False`;
+  `source_id` segue como antes.
+- `quantilica registry export [--json] [--strict]`: descobre os entry points
+  `quantilica.fetchers` e `quantilica.lake` e monta o registro (info,
+  `freshness_policy`, `default_output`, grupos, `lake` e `lake_source_id`).
+  `--strict` falha se algum fetcher não declarar `info`, não carregar ou houver
+  id/apelido duplicado.
+
+### Alterado
+
+- `quantilica install` e afins: para fetchers instalados que declaram `info`,
+  id e apelidos vêm do `FetcherInfo`; `SOURCES_REGISTRY` fica como reserva
+  para instalar fontes ausentes. Teste garante que os dois não se contradizem.
+
 ## [0.16.0] - 2026-11-08
 
 ### Adicionado
