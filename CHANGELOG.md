@@ -13,6 +13,15 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
   URL de reserva `/api/v2/catalog/sync` (e a tentativa em 404 que existia por
   causa dela) saiu: o portal removeu esse caminho. Um 404 agora falha na hora
   com a mensagem do servidor.
+- `sync` de todo fetcher construído com `FetcherApp` não sai mais com código 0
+  quando algum arquivo falha. Se ao menos um arquivo foi baixado e outros
+  falharam, sai com o código `3` (`EXIT_SYNC_PARTIAL`, "download parcial": o que
+  baixou está íntegro em disco); se nada foi baixado, sai com `1`. Antes saía
+  com `0` listando os erros, e quem automatiza a coleta (cron, CI) considerava a
+  execução bem-sucedida. **Mudança de contrato:** scripts que tratam
+  qualquer código diferente de 0 como falha total devem tratar o `3` como
+  parcial. O `pipeline` converte o que baixou mesmo com download parcial e
+  devolve `3` ao final; com falha total, não converte e sai com `1`.
 
 ## [0.18.0] - 2026-11-10
 

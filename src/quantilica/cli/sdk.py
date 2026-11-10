@@ -70,6 +70,7 @@ def derive_fetcher_info(name: str) -> FetcherInfo:
 
 
 __all__ = [
+    "EXIT_SYNC_PARTIAL",
     "derive_fetcher_info",
     "CheckPlan",
     "CheckPlanItem",
@@ -81,6 +82,13 @@ __all__ = [
     "default_path_builder",
     "make_resolve_groups",
 ]
+
+
+# Código de saída do ``sync`` quando parte dos arquivos baixou e parte falhou.
+# O que baixou está íntegro em disco (o cron segue com a ingestão); o código
+# distinto de 0 faz a falha parcial aparecer como alerta. Se nada baixou, o
+# código é 1 (falha total). 124/130/143 já são de timeout/sinal e 75/78 do cron.
+EXIT_SYNC_PARTIAL = 3
 
 
 @dataclass(frozen=True)
@@ -883,14 +891,23 @@ class FetcherApp:
                     "(build_default_commands=True)."
                 )
                 raise typer.Exit(1) from None
-            ctx.invoke(
-                sync_cmd,
-                groups=groups,
-                output=actual_output,
-                dry_run=dry_run,
-                workers=workers,
-                verbose=verbose,
-            )
+            sync_partial = False
+            try:
+                ctx.invoke(
+                    sync_cmd,
+                    groups=groups,
+                    output=actual_output,
+                    dry_run=dry_run,
+                    workers=workers,
+                    verbose=verbose,
+                )
+            except typer.Exit as exc:
+                # Falha parcial não impede converter o que já baixou; o código
+                # parcial é devolvido ao final. Falha total ou outros códigos
+                # interrompem o pipeline como antes.
+                if exc.exit_code != EXIT_SYNC_PARTIAL:
+                    raise
+                sync_partial = True
 
             if dry_run:
                 console.print(
@@ -910,6 +927,12 @@ class FetcherApp:
             if self._report_convert(result, console):
                 console.print("[red]✗[/red] Pipeline concluído com erros na conversão.")
                 raise typer.Exit(1)
+            if sync_partial:
+                console.print(
+                    "[yellow]![/yellow] Pipeline concluído com download parcial: "
+                    f"lake em [dim]{lake_out}[/dim]."
+                )
+                raise typer.Exit(EXIT_SYNC_PARTIAL)
             console.print(
                 f"[green]✓[/green] Pipeline concluído: lake em [dim]{lake_out}[/dim]."
             )
@@ -1754,6 +1777,9 @@ class FetcherApp:
                 console.print(f"[red]{len(errors)} erro(s):[/red]")
                 for eid, emsg in errors:
                     console.print(f"  {eid}: {emsg}")
+                # Erros nunca saem como sucesso: parcial (3) se algo baixou,
+                # falha total (1) se nada baixou.
+                raise typer.Exit(EXIT_SYNC_PARTIAL if downloaded > 0 else 1)
 
         @self.app.command("check")
         def check(
