@@ -12,6 +12,7 @@ import email.utils
 import inspect
 import json
 import os
+import re
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -33,6 +34,7 @@ from quantilica.core.http import (
 )
 from quantilica.core.logging import get_logger
 from quantilica.core.manifests import manifest_sidecar_path
+from quantilica.core.registry import FetcherInfo
 from quantilica.core.storage import (
     StampedDataRepository,
     expected_format_for_path,
@@ -55,7 +57,20 @@ from quantilica.cli.ui import (
 
 logger = get_logger(__name__)
 
+
+def derive_fetcher_info(name: str) -> FetcherInfo:
+    """Deriva um :class:`FetcherInfo` mínimo do nome do fetcher.
+
+    Usado quando o fetcher ainda não declara ``info``: o id é o ``name`` sem o
+    sufixo ``-fetcher``, normalizado (``bcb_sgs-fetcher`` -> ``bcb-sgs``).
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower().removesuffix("-fetcher"))
+    slug = slug.strip("-") or "fetcher"
+    return FetcherInfo(id=slug, nome=slug)
+
+
 __all__ = [
+    "derive_fetcher_info",
     "CheckPlan",
     "CheckPlanItem",
     "DataRepository",
@@ -469,6 +484,9 @@ class FetcherApp:
         source_id: Source ID recorded in download manifests. Defaults to
             ``name`` without the ``-fetcher`` suffix. When ``default_output``
             is omitted it is derived as ``/data/{source_id}``.
+        info: Fatos da fonte (:class:`~quantilica.core.registry.FetcherInfo`).
+            Sem ele, um ``FetcherInfo`` mínimo é derivado de ``name`` e
+            ``info_declared`` fica ``False`` (compatibilidade com fetchers antigos).
         build_default_commands: If True (default), registers the built-in
             ``sync`` and ``list`` commands. Set to False to register only
             custom commands via :meth:`attach_command`.
@@ -489,6 +507,7 @@ class FetcherApp:
         source_id: str | None = None,
         client: HttpClient | FtpClient | None = None,
         freshness_policy: Any = None,
+        info: FetcherInfo | None = None,
         build_default_commands: bool = True,
     ):
         self.name = name
@@ -503,6 +522,8 @@ class FetcherApp:
         self.default_output = default_output or Path(f"/data/{self.source_id}")
         self.client = client or default_client()
         self.freshness_policy = freshness_policy
+        self.info_declared = info is not None
+        self.info: FetcherInfo = info or derive_fetcher_info(name)
 
         self.all_group_keys = list(self.groups.keys())
         self.all_keys = self.all_group_keys + list(self.aliases.keys())
@@ -510,6 +531,9 @@ class FetcherApp:
 
         # O objeto typer principal
         self.app = typer.Typer(help=help)
+        # O entry point `quantilica.fetchers` aponta para o Typer; este atributo
+        # deixa `quantilica registry export` chegar ao FetcherApp.
+        self.app.fetcher_app = self  # type: ignore[attr-defined]
         if build_default_commands:
             self._build_commands()
 
