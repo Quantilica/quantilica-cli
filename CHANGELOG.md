@@ -7,6 +7,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+## [0.17.0] - 2026-11-10
+
 ### Adicionado
 
 - `FetcherApp(info=FetcherInfo(...))`: o fetcher declara os fatos da fonte
