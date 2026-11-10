@@ -8,6 +8,7 @@ from importlib.metadata import entry_points
 from typing import Annotated
 
 import typer
+from quantilica.core.registry import FetcherInfo
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.table import Table
@@ -65,11 +66,90 @@ def _load_plugins(group: str) -> dict[str, typer.Typer]:
     return plugins
 
 
+def _declared_info(plugin_app: typer.Typer) -> FetcherInfo | None:
+    """``FetcherInfo`` declarado pelo plugin (``None`` se não for um FetcherApp)."""
+    fetcher = getattr(plugin_app, "fetcher_app", None)
+    if fetcher is None or not getattr(fetcher, "info_declared", False):
+        return None
+    info = getattr(fetcher, "info", None)
+    return info if isinstance(info, FetcherInfo) else None
+
+
+def _warn(message: str) -> None:
+    sys.stderr.write(f"Aviso: {message}\n")
+
+
+def _mount_fetchers(plugins: dict[str, typer.Typer], reserved: set[str]) -> None:
+    """Monta um subcomando visível por fetcher e os apelidos como ocultos.
+
+    O nome visível é o id canônico (``info.id``); plugin sem ``info`` declarado
+    segue com o nome do entry point. O nome do entry point e os apelidos viram
+    subcomandos ocultos para o mesmo Typer. Precedência: embutidos > ids
+    canônicos > nomes de entry point > apelidos. Apelido que colide com um
+    nome de precedência maior, ou que dois plugins reivindicam, não é montado
+    (aviso em stderr); nunca derruba o CLI.
+    """
+    taken = set(reserved)
+    canonical: dict[str, typer.Typer] = {}
+    for ep_name, plugin_app in sorted(plugins.items()):
+        info = _declared_info(plugin_app)
+        name = info.id if info is not None else ep_name
+        canonical.setdefault(name, plugin_app)
+        app.add_typer(plugin_app, name=name)
+    taken |= set(canonical)
+
+    def claim(tier: list[tuple[str, str, typer.Typer, str]]) -> None:
+        owners: dict[str, set[str]] = {}
+        for name, owner, _, _ in tier:
+            owners.setdefault(name, set()).add(owner)
+        warned: set[str] = set()
+        for name, owner, plugin_app, kind in tier:
+            if name in warned:
+                continue
+            if name in taken:
+                _warn(
+                    f"{kind} '{name}' de '{owner}' colide com um comando existente; "
+                    "não foi montado."
+                )
+                warned.add(name)
+            elif len(owners[name]) > 1:
+                _warn(
+                    f"{kind} '{name}' é reivindicado por mais de um plugin "
+                    f"({', '.join(sorted(owners[name]))}); não foi montado."
+                )
+                warned.add(name)
+            else:
+                app.add_typer(plugin_app, name=name, hidden=True)
+        taken.update(n for n, o, _, _ in tier if len(owners[n]) == 1)
+
+    eps_tier: list[tuple[str, str, typer.Typer, str]] = []
+    alias_tier: list[tuple[str, str, typer.Typer, str]] = []
+    for ep_name, plugin_app in sorted(plugins.items()):
+        info = _declared_info(plugin_app)
+        if info is None:
+            continue
+        if ep_name != info.id:
+            eps_tier.append((ep_name, info.id, plugin_app, "nome de entry point"))
+        for alias in info.aliases:
+            alias_tier.append((alias, info.id, plugin_app, "apelido"))
+    seen: set[tuple[str, str]] = set()
+    for tier in (eps_tier, alias_tier):
+        # mesmo nome repetido pelo mesmo plugin (apelido == entry point) vale uma vez
+        tier[:] = [
+            t for t in tier if not ((t[0], t[1]) in seen or seen.add((t[0], t[1])))
+        ]
+        claim(tier)
+
+
 def _register_plugins() -> None:
     # Fetchers e comandos ficam na raiz: `quantilica <nome>`.
-    for name, plugin_app in _load_plugins(FETCHER_GROUP).items():
-        app.add_typer(plugin_app, name=name)
-    for name, plugin_app in _load_plugins(COMMAND_GROUP).items():
+    commands = _load_plugins(COMMAND_GROUP)
+    reserved = {
+        "catalog", "docs", "lake", "manifests", "registry", "sources",
+        "install", "uninstall", "doctor", "health", "list-sources",
+    } | set(commands)  # fmt: skip
+    _mount_fetchers(_load_plugins(FETCHER_GROUP), reserved)
+    for name, plugin_app in commands.items():
         app.add_typer(plugin_app, name=name)
 
 
@@ -142,7 +222,8 @@ def list_sources(
         description = ""
         if info and hasattr(info, "help") and info.help:
             description = info.help
-        table.add_row(f"quantilica {name}", description)
+        declared = _declared_info(plugin_app)
+        table.add_row(f"quantilica {declared.id if declared else name}", description)
 
     console.print(table)
 

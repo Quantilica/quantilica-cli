@@ -7,6 +7,16 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+### Alterado
+
+- O subcomando visível de cada fetcher que declara `info` passa a ser o id
+  canônico (`quantilica tesouro-direto`). O nome do entry point (`td`) e os
+  apelidos de `info.aliases` continuam funcionando como subcomandos ocultos
+  para o mesmo app, então `quantilica td sync` produz os mesmos caminhos,
+  `source_id` e telemetria. Apelido que colide com comando embutido, com id ou
+  entry point de outro plugin, ou reivindicado por dois plugins, não é montado
+  e sai um aviso em stderr. Plugin sem `info` segue com o nome do entry point.
+
 ## [0.17.0] - 2026-11-10
 
 ### Adicionado
