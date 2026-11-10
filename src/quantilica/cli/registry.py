@@ -181,7 +181,16 @@ def cmd_export(
         sys.stdout.write(json.dumps(registry, ensure_ascii=False, indent=2) + "\n")
     else:
         table = Table(title=f"Registro de fetchers ({len(found)})")
-        for col in ("Id", "Apelidos", "Órgão", "Cadência", "Frescor", "Info", "Lake"):
+        for col in (
+            "Id",
+            "Apelidos",
+            "Órgão",
+            "Cadência",
+            "Redistrib.",
+            "Frescor",
+            "Info",
+            "Lake",
+        ):
             table.add_column(col)
         for d, row in zip(
             sorted(found, key=lambda d: (d.info.id, d.entry_point)),
@@ -193,6 +202,7 @@ def cmd_export(
                 ", ".join(d.info.aliases) or "-",
                 d.info.orgao or "-",
                 d.info.cadencia or "-",
+                d.info.redistribuicao or "-",
                 d.freshness_policy or "-",
                 "[green]sim[/green]" if d.info_declared else "[yellow]não[/yellow]",
                 "sim" if row["lake"] else "-",

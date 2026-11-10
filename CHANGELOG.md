@@ -7,6 +7,13 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+### Adicionado
+
+- `quantilica registry export` inclui `redistribuicao` e `restricao_nota` de
+  cada fetcher (e a coluna `Redistrib.` na tabela). `--strict` não falha por
+  `redistribuicao` ausente: `None` significa "não avaliada". Requer
+  `quantilica-core` com o campo (a partir da próxima versão do core).
+
 ### Alterado
 
 - O subcomando visível de cada fetcher que declara `info` passa a ser o id

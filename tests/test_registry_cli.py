@@ -163,3 +163,27 @@ def test_apelidos_do_info_instalado_nao_contradizem_a_tabela():
         if n in sources.SOURCES_REGISTRY and sources.SOURCES_REGISTRY[n] != dist
     }
     assert not conflicts, f"FetcherInfo contradiz SOURCES_REGISTRY: {conflicts}"
+
+
+def test_export_inclui_redistribuicao_e_strict_nao_exige(fake_eps):
+    restrito = FetcherInfo(
+        "b3",
+        nome="B3",
+        redistribuicao="restrita",
+        restricao_nota="termos vedam coleta automatizada",
+    )
+    livre = FetcherInfo("cvm", nome="CVM")  # redistribuicao ausente
+    fake_eps(
+        fetchers=[
+            _ep("b3", _fetcher("b3-fetcher", info=restrito).app, "b3-fetcher"),
+            _ep("cvm", _fetcher("cvm-fetcher", info=livre).app, "cvm-fetcher"),
+        ]
+    )
+    res = runner.invoke(app, ["export", "--strict", "--json"])
+    assert res.exit_code == 0
+    por_id = {f["id"]: f for f in json.loads(res.stdout)["fetchers"]}
+    assert por_id["b3"]["redistribuicao"] == "restrita"
+    assert por_id["b3"]["restricao_nota"] == "termos vedam coleta automatizada"
+    assert por_id["cvm"]["redistribuicao"] is None
+    assert por_id["cvm"]["restricao_nota"] is None
+    assert runner.invoke(app, ["export"]).exit_code == 0
