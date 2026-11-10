@@ -7,12 +7,14 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+## [0.18.0] - 2026-11-10
+
 ### Adicionado
 
 - `quantilica registry export` inclui `redistribuicao` e `restricao_nota` de
   cada fetcher (e a coluna `Redistrib.` na tabela). `--strict` não falha por
   `redistribuicao` ausente: `None` significa "não avaliada". Requer
-  `quantilica-core` com o campo (a partir da próxima versão do core).
+  `quantilica-core` com o campo (`>=0.20.0`).
 
 ### Alterado
 
