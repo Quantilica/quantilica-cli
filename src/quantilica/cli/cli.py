@@ -18,6 +18,7 @@ from quantilica.cli.docs import app as docs_app
 from quantilica.cli.health import cmd_health
 from quantilica.cli.lake import app as lake_app
 from quantilica.cli.manifests import app as manifests_app
+from quantilica.cli.registry import app as registry_app
 from quantilica.cli.sources import (
     app as sources_app,
 )
@@ -40,6 +41,7 @@ app.add_typer(catalog_app, name="catalog")
 app.add_typer(docs_app, name="docs")
 app.add_typer(lake_app, name="lake")
 app.add_typer(manifests_app, name="manifests")
+app.add_typer(registry_app, name="registry")
 app.add_typer(sources_app, name="sources")
 
 # Adiciona comandos top-level install, uninstall, doctor e health
