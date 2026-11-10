@@ -161,7 +161,7 @@ def test_source_id_e_telemetria_nao_dependem_do_nome_do_subcomando():
         info=FetcherInfo(id="tesouro-direto", nome="TD", aliases=("td",)),
     )
     assert fa.source_id == "td"
-    assert str(fa.default_output) == "/data/td"
+    assert fa.default_output.as_posix() == "/data/td"
 
 
 def _help(nome: str) -> str:
