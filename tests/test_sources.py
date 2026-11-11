@@ -317,8 +317,23 @@ def test_install_recusa_o_que_o_indice_nao_publica(monkeypatch):
     from quantilica.cli import sources
 
     monkeypatch.setattr(sources, "index_has", lambda dist, idx: False)
+    monkeypatch.setattr(sources, "_index_lookup", lambda dist, idx: False)
     with patch("subprocess.run") as run, pytest.raises(RuntimeError) as exc:
         sources.install_package("foo-fetcher", requested="foo")
     run.assert_not_called()
     assert "não foi encontrado no índice" in str(exc.value)
     assert "'foo' foi lido como 'foo-fetcher'" in str(exc.value)
+
+
+@pytest.mark.indice_real
+def test_install_distingue_indice_fora_do_ar():
+    from quantilica.cli import sources
+
+    with (
+        patch("urllib.request.urlopen", side_effect=OSError("sem rede")),
+        patch("subprocess.run") as run,
+        pytest.raises(RuntimeError) as exc,
+    ):
+        sources.install_package("anp-fetcher")
+    run.assert_not_called()
+    assert "não respondeu" in str(exc.value)

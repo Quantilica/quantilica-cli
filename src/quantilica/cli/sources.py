@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 from importlib.metadata import entry_points
 from pathlib import Path
@@ -189,11 +190,8 @@ def uv_index_args(idx: str) -> list[str]:
     ]
 
 
-def index_has(dist_spec: str, index_url: str) -> bool:
-    """Diz se o índice da Quantilica publica a distribuição (PEP 503).
-
-    Sem resposta ou com erro devolve ``False``: na dúvida, não instala.
-    """
+def _index_lookup(dist_spec: str, index_url: str) -> bool | None:
+    """``True`` se o índice publica, ``False`` se não (404), ``None`` sem resposta."""
     name = re.split(r"[\[<>=!~; ]", dist_spec, maxsplit=1)[0]
     name = re.sub(r"[-_.]+", "-", name).lower()
     url = f"{index_url.rstrip('/')}/{name}/"
@@ -201,8 +199,18 @@ def index_has(dist_spec: str, index_url: str) -> bool:
         req = urllib.request.Request(url, headers={"User-Agent": "quantilica-cli"})
         with urllib.request.urlopen(req, timeout=10) as response:
             return response.status == 200
+    except urllib.error.HTTPError as exc:
+        return False if exc.code == 404 else None
     except Exception:
-        return False
+        return None
+
+
+def index_has(dist_spec: str, index_url: str) -> bool:
+    """Diz se o índice da Quantilica publica a distribuição (PEP 503).
+
+    Sem resposta ou com erro devolve ``False``: na dúvida, não instala.
+    """
+    return _index_lookup(dist_spec, index_url) is True
 
 
 def install_package(
@@ -224,6 +232,11 @@ def install_package(
     # digitado errado (ou um fetcher ainda não publicado) cairia no PyPI, onde
     # qualquer pessoa pode registrar um pacote com esse nome.
     if not index_has(dist_name, idx):
+        if _index_lookup(dist_name, idx) is None:
+            raise RuntimeError(
+                f"O índice da Quantilica ({idx}) não respondeu; "
+                f"{dist_name} não foi instalado. Tente de novo mais tarde"
+            )
         msg = f"{dist_name} não foi encontrado no índice da Quantilica ({idx})"
         if requested:
             msg += f". '{requested}' foi lido como '{dist_name}'"
