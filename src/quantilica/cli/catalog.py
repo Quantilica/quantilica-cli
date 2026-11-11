@@ -544,9 +544,17 @@ def cmd_catalog_sync(
         target_lake,
         source_filter=source,
         sample_size=safe_sample_size,
-        registry=load_registry(registry_file),
+        registry=(registry := load_registry(registry_file)),
     )
     payload = build.payload
+    if not registry and not dry_run:
+        # Sem registro não dá para saber quais fontes são de redistribuição
+        # restrita: enviar assim poderia publicar o que não pode ser publicado.
+        console.print(
+            "[red]Registro de fetchers vazio: nada foi enviado.[/red] Instale os "
+            "fetchers nesta máquina ou informe --registry com um registry.json."
+        )
+        raise typer.Exit(1)
 
     sources_count = len(payload.get("sources", []))
     datasets_count = len(payload.get("datasets", []))

@@ -17,7 +17,12 @@ runner = CliRunner()
 @pytest.fixture(autouse=True)
 def _registro_vazio(monkeypatch: pytest.MonkeyPatch) -> None:
     """Os testes não dependem dos fetchers instalados."""
-    monkeypatch.setattr("quantilica.cli.catalog.load_registry", lambda *a, **k: {})
+    from quantilica.core.registry import FetcherInfo
+
+    registro = {"outra-fonte": FetcherInfo(id="outra-fonte", nome="Outra fonte")}
+    monkeypatch.setattr(
+        "quantilica.cli.catalog.load_registry", lambda *a, **k: registro
+    )
 
 
 def test_catalog_help() -> None:
@@ -237,3 +242,26 @@ def test_send_catalog_payload_erro_de_conexao_vira_runtime_error() -> None:
     with patch("urllib.request.urlopen", falha):
         with pytest.raises(RuntimeError, match="Erro de conexão"):
             send_catalog_payload("https://portal.test", {"sources": []})
+
+
+def test_catalog_sync_recusa_envio_com_registro_vazio(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("quantilica.cli.catalog.load_registry", lambda *a, **k: {})
+    with patch("quantilica.cli.catalog.send_catalog_payload") as mock_send:
+        res = runner.invoke(
+            app,
+            [
+                "catalog",
+                "sync",
+                "--lake-dir",
+                str(tmp_path),
+                "--portal-url",
+                "https://portal.test",
+                "--api-key",
+                "secret-key",
+            ],
+        )
+    assert res.exit_code == 1
+    assert "Registro de fetchers vazio" in " ".join(res.output.split())
+    mock_send.assert_not_called()
