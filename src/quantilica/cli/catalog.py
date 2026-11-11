@@ -170,7 +170,7 @@ class CatalogBuild:
     payload: dict[str, Any]
     #: Datasets omitidos por redistribuição restrita, por id canônico da fonte.
     restricted: Counter[str] = field(default_factory=Counter)
-    #: ``source_id`` do lake que o registro não conhece (mantidos como vieram).
+    #: ``source_id`` do lake que o registro não conhece (ficam fora do payload).
     unknown: set[str] = field(default_factory=set)
 
 
@@ -399,7 +399,10 @@ def build_catalog(
             build.restricted[src["id"]] += 1
             continue
         if not meta["conhecida"]:
+            # Sem registro não há como saber se a fonte pode ser redistribuída
+            # (um fetcher restrito não instalado aqui cairia neste caso).
             build.unknown.add(src["id"])
+            continue
         if meta["dataset"]["id"] in seen_ids:
             logger.warning(
                 "Dataset %s aparece mais de uma vez no Lake (%s); mantido o primeiro.",
@@ -417,8 +420,7 @@ def build_catalog(
 
     for source_id in sorted(build.unknown):
         logger.warning(
-            "Fonte %r desconhecida do registro de fetchers: id mantido e "
-            "metadados da fonte vão nulos.",
+            "Fonte %r desconhecida do registro de fetchers: ficou de fora do envio.",
             source_id,
         )
     if build.restricted:
@@ -581,7 +583,7 @@ def cmd_catalog_sync(
         )
     if build.unknown:
         console.print(
-            "[yellow]Sem registro (metadados nulos):[/yellow] "
+            "[yellow]Fora do payload (sem registro):[/yellow] "
             + ", ".join(sorted(build.unknown))
         )
 

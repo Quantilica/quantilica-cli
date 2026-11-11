@@ -19,7 +19,10 @@ def _registro_vazio(monkeypatch: pytest.MonkeyPatch) -> None:
     """Os testes não dependem dos fetchers instalados."""
     from quantilica.core.registry import FetcherInfo
 
-    registro = {"outra-fonte": FetcherInfo(id="outra-fonte", nome="Outra fonte")}
+    registro = {
+        fid: FetcherInfo(id=fid, nome=fid.upper())
+        for fid in ("cvm", "anp", "anac", "outra-fonte")
+    }
     monkeypatch.setattr(
         "quantilica.cli.catalog.load_registry", lambda *a, **k: registro
     )

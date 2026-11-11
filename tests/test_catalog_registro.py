@@ -96,26 +96,16 @@ def test_metadados_da_fonte_vem_do_registro(
     assert src["sigla"] is None  # o registro não tem sigla
 
 
-def test_fonte_desconhecida_mantem_id_e_manda_nulos(
+def test_fonte_desconhecida_fica_fora_do_envio(
     tmp_path: Path, registro: dict[str, FetcherInfo], caplog: pytest.LogCaptureFixture
 ) -> None:
     _dataset(tmp_path, "misterio", "tabela")
     with caplog.at_level(logging.WARNING, logger="quantilica.cli.catalog"):
         build = build_catalog(tmp_path, registry=registro)
-    src = build.payload["sources"][0]
-    assert src["id"] == "misterio"
-    for campo in (
-        "nome",
-        "sigla",
-        "orgao_emissor",
-        "dominio_tematico",
-        "licenca",
-        "homepage_url",
-        "cadencia",
-    ):
-        assert src[campo] is None, campo
-    assert build.payload["datasets"][0]["id"] == "misterio/tabela"
-    assert build.payload["datasets"][0]["fetcher_id"] is None
+    assert build.payload["sources"] == []
+    assert build.payload["datasets"] == []
+    assert build.payload["columns"] == []
+    assert build.payload["samples"] == []
     assert build.unknown == {"misterio"}
     assert "misterio" in caplog.text
 
@@ -227,5 +217,5 @@ def test_dry_run_resume_restritas_e_desconhecidas(
     assert res.exit_code == 0, res.output
     assert "Modo --dry-run ativo" in res.output
     assert "Fora do payload (restrita): b3 (1)" in res.output
-    assert "Sem registro (metadados nulos): misterio" in res.output
+    assert "Fora do payload (sem registro): misterio" in res.output
     assert "tesouro-direto/precos" in res.output
