@@ -6,11 +6,18 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
 from quantilica.cli.cli import app
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _registro_vazio(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Os testes não dependem dos fetchers instalados."""
+    monkeypatch.setattr("quantilica.cli.catalog.load_registry", lambda *a, **k: {})
 
 
 def test_catalog_help() -> None:

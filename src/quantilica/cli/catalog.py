@@ -15,10 +15,14 @@ import logging
 import os
 import urllib.error
 import urllib.request
+from collections import Counter
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any
 
 import typer
+from quantilica.core.registry import FetcherInfo, RegistryError
 from rich.console import Console
 from rich.table import Table
 
@@ -75,10 +79,137 @@ def _default_lake_dir() -> Path:
         return Path("~/data/lake").expanduser().resolve()
 
 
+#: Registro: id canônico, apelido (e id de lake) -> ``FetcherInfo``.
+Registry = Mapping[str, FetcherInfo]
+
+
+def _registry_from_infos(
+    infos: list[tuple[FetcherInfo, tuple[str, ...]]],
+) -> dict[str, FetcherInfo]:
+    """Indexa os fetchers por id canônico, apelidos e ids extras (lake).
+
+    Id canônico e apelidos têm prioridade sobre os ids extras; entre dois
+    fetchers que disputam o mesmo nome, vale o primeiro.
+    """
+    index: dict[str, FetcherInfo] = {}
+    for info, _extra in infos:
+        for name in info.names:
+            index.setdefault(name, info)
+    for info, extra in infos:
+        for name in extra:
+            index.setdefault(name, info)
+    return index
+
+
+def load_registry_file(path: Path) -> dict[str, FetcherInfo]:
+    """Lê um ``registry.json`` (de ``registry export --json`` ou do índice)."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    entries = data.get("fetchers") if isinstance(data, dict) else None
+    if not isinstance(entries, list):
+        raise RegistryError(f"{path}: registro sem a lista 'fetchers'")
+    known = set(FetcherInfo.__dataclass_fields__)
+    infos: list[tuple[FetcherInfo, tuple[str, ...]]] = []
+    for entry in entries:
+        if entry.get("info_declared") is False:
+            continue
+        info = FetcherInfo.from_dict({k: v for k, v in entry.items() if k in known})
+        extra = tuple(
+            n for n in (entry.get("lake_source_id"), entry.get("source_id")) if n
+        )
+        infos.append((info, extra))
+    return _registry_from_infos(infos)
+
+
+def load_registry(registry_file: Path | None = None) -> dict[str, FetcherInfo]:
+    """Registro de fetchers: do arquivo dado ou dos entry points instalados.
+
+    Só entram fetchers que declaram ``info`` (o resto é desconhecido). Falha ao
+    carregar vira registro vazio com aviso: todas as fontes ficam sem metadados.
+    """
+    try:
+        if registry_file is not None:
+            return load_registry_file(registry_file)
+        from quantilica.cli.registry import discover_fetchers
+
+        return _registry_from_infos(
+            [
+                (
+                    d.info,
+                    tuple(n for n in (d.lake_source_id, d.source_id) if n),
+                )
+                for d in discover_fetchers()
+                if d.info_declared
+            ]
+        )
+    except Exception as exc:
+        logger.warning("Não foi possível carregar o registro de fetchers: %s", exc)
+        return {}
+
+
+def _count_rows(parquet_files: list[Path]) -> int:
+    """Soma ``num_rows`` do rodapé de cada Parquet, sem ler os dados."""
+    if not parquet_files:
+        return 0
+    try:
+        import pyarrow.parquet as pq
+    except ImportError:
+        return 0
+    total = 0
+    for path in parquet_files:
+        try:
+            total += pq.ParquetFile(path).metadata.num_rows
+        except Exception as exc:
+            logger.warning("Não foi possível contar linhas de %s: %s", path, exc)
+    return total
+
+
+@dataclass
+class CatalogBuild:
+    """Resultado da varredura: o payload e o que ficou de fora ou sem registro."""
+
+    payload: dict[str, Any]
+    #: Datasets omitidos por redistribuição restrita, por id canônico da fonte.
+    restricted: Counter[str] = field(default_factory=Counter)
+    #: ``source_id`` do lake que o registro não conhece (mantidos como vieram).
+    unknown: set[str] = field(default_factory=set)
+
+
+def _source_object(
+    source_id: str, info: FetcherInfo | None, total_bytes: int
+) -> dict[str, Any]:
+    """Metadados da fonte: só o que o registro declara; o resto vai ``None``."""
+    return {
+        "id": source_id,
+        "nome": info.nome if info else None,
+        "sigla": None,
+        "orgao_emissor": info.orgao if info else None,
+        "dominio_tematico": info.dominio if info else None,
+        "licenca": info.licenca if info else None,
+        "homepage_url": info.homepage if info else None,
+        "cadencia": info.cadencia if info else None,
+        "redistribuicao": info.redistribuicao if info else None,
+        "tier_default": 2 if total_bytes > 0 else 1,
+        "ativo": True,
+    }
+
+
+def _declared_text(desc_data: Mapping[str, Any], key: str) -> str | None:
+    value = desc_data.get(key)
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
 def _extract_dataset_metadata(
-    descriptor_path: Path, sample_size: int = 20, lake_root: Path | None = None
+    descriptor_path: Path,
+    sample_size: int = 20,
+    lake_root: Path | None = None,
+    registry: Registry | None = None,
 ) -> dict[str, Any] | None:
-    """Extrai metadados, colunas e amostras de um _dataset.json e seus Parquets."""
+    """Extrai metadados, colunas e amostras de um _dataset.json e seus Parquets.
+
+    O ``source_id`` do descritor é resolvido contra ``registry`` (apelido vira
+    id canônico). O resultado traz ``restrita`` (fonte de redistribuição
+    restrita) e ``conhecida`` (``source_id`` presente no registro).
+    """
     try:
         desc_text = descriptor_path.read_text(encoding="utf-8")
         desc_data = json.loads(desc_text)
@@ -86,15 +217,20 @@ def _extract_dataset_metadata(
         logger.warning("Falha ao ler descritor %s: %s", descriptor_path, exc)
         return None
 
-    source_id = desc_data.get("source_id")
+    raw_source_id = desc_data.get("source_id")
     dataset_id = desc_data.get("dataset_id")
-    if not source_id or not dataset_id:
+    if not raw_source_id or not dataset_id:
         return None
+
+    info = (registry or {}).get(raw_source_id)
+    source_id = info.id if info else raw_source_id
+    restricted = info is not None and info.redistribuicao == "restrita"
 
     dataset_dir = descriptor_path.parent
     parquet_files = list(dataset_dir.rglob("*.parquet"))
     total_arquivos = len(parquet_files)
     total_bytes = sum(f.stat().st_size for f in parquet_files)
+    total_rows = _count_rows(parquet_files)
 
     ultima_materializacao: str | None = None
     if parquet_files:
@@ -172,42 +308,31 @@ def _extract_dataset_metadata(
                 exc,
             )
 
-    source_obj = {
-        "id": source_id,
-        "nome": source_id.upper(),
-        "sigla": source_id.upper()[:32],
-        "orgao_emissor": source_id.upper(),
-        "dominio_tematico": "Geral",
-        "licenca": "Open Data",
-        "homepage_url": None,
-        "tier_default": 2 if total_bytes > 0 else 1,
-        "ativo": True,
-    }
+    source_obj = _source_object(source_id, info, total_bytes)
 
     if lake_root:
         try:
             lake_path = str(dataset_dir.relative_to(lake_root))
         except ValueError:
-            lake_path = f"{source_id}/{dataset_id}"
+            lake_path = f"{raw_source_id}/{dataset_id}"
     else:
         try:
             lake_path = str(dataset_dir.relative_to(dataset_dir.parent.parent))
         except ValueError:
-            lake_path = f"{source_id}/{dataset_id}"
+            lake_path = f"{raw_source_id}/{dataset_id}"
 
     dataset_obj = {
         "id": full_id,
         "source_id": source_id,
+        "fetcher_id": info.id if info else None,
         "nome": alias.replace("-", " ").replace("_", " ").title(),
-        "descricao": (
-            f"Dataset {alias} extraído e materializado no Universal Hive Parquet Lake."
-        ),
-        "frequencia_temporal": "mensal",
-        "granularidade_espacial": "nacional",
+        "descricao": _declared_text(desc_data, "descricao"),
+        "frequencia_temporal": _declared_text(desc_data, "frequencia_temporal"),
+        "granularidade_espacial": _declared_text(desc_data, "granularidade_espacial"),
         "lake_path": lake_path,
         "manifest_sha256": None,
         "ultima_materializacao_em": ultima_materializacao,
-        "total_linhas": 0,
+        "total_linhas": total_rows,
         "total_bytes": total_bytes,
         "total_arquivos": total_arquivos,
         "em_destaque": False,
@@ -224,54 +349,102 @@ def _extract_dataset_metadata(
         "dataset": dataset_obj,
         "columns": columns,
         "sample": sample_obj,
+        "restrita": restricted,
+        "conhecida": info is not None,
     }
+
+
+def build_catalog(
+    lake_dir: Path,
+    source_filter: str | None = None,
+    sample_size: int = 20,
+    registry: Registry | None = None,
+) -> CatalogBuild:
+    """Varre o Lake e monta o payload, o que ficou de fora e o que é desconhecido.
+
+    ``registry`` ausente carrega os fetchers instalados. Fontes de
+    redistribuição restrita não entram no payload.
+    """
+    if registry is None:
+        registry = load_registry()
+    sources_dict: dict[str, dict[str, Any]] = {}
+    datasets_list: list[dict[str, Any]] = []
+    columns_list: list[dict[str, Any]] = []
+    samples_list: list[dict[str, Any]] = []
+    build = CatalogBuild(payload={})
+
+    if not lake_dir.is_dir():
+        logger.warning("Diretório do Lake %s não existe.", lake_dir)
+        build.payload = {"sources": [], "datasets": [], "columns": [], "samples": []}
+        return build
+
+    wanted = None
+    if source_filter:
+        found = registry.get(source_filter)
+        wanted = found.id if found else source_filter
+
+    seen_ids: set[str] = set()
+    # Busca todos os descritores _dataset.json
+    for desc_path in sorted(lake_dir.rglob("_dataset.json")):
+        meta = _extract_dataset_metadata(
+            desc_path, sample_size=sample_size, lake_root=lake_dir, registry=registry
+        )
+        if not meta:
+            continue
+
+        src = meta["source"]
+        if wanted and src["id"] != wanted:
+            continue
+        if meta["restrita"]:
+            build.restricted[src["id"]] += 1
+            continue
+        if not meta["conhecida"]:
+            build.unknown.add(src["id"])
+        if meta["dataset"]["id"] in seen_ids:
+            logger.warning(
+                "Dataset %s aparece mais de uma vez no Lake (%s); mantido o primeiro.",
+                meta["dataset"]["id"],
+                desc_path,
+            )
+            continue
+        seen_ids.add(meta["dataset"]["id"])
+
+        sources_dict.setdefault(src["id"], src)
+        datasets_list.append(meta["dataset"])
+        columns_list.extend(meta["columns"])
+        if meta["sample"]["linhas_amostra"] or meta["sample"]["schema_arrow_json"]:
+            samples_list.append(meta["sample"])
+
+    for source_id in sorted(build.unknown):
+        logger.warning(
+            "Fonte %r desconhecida do registro de fetchers: id mantido e "
+            "metadados da fonte vão nulos.",
+            source_id,
+        )
+    if build.restricted:
+        logger.info(
+            "%d dataset(s) de fonte(s) de redistribuição restrita ficaram de fora: %s",
+            sum(build.restricted.values()),
+            ", ".join(f"{k} ({v})" for k, v in sorted(build.restricted.items())),
+        )
+
+    build.payload = {
+        "sources": list(sources_dict.values()),
+        "datasets": datasets_list,
+        "columns": columns_list,
+        "samples": samples_list,
+    }
+    return build
 
 
 def extract_catalog_payload(
     lake_dir: Path,
     source_filter: str | None = None,
     sample_size: int = 20,
+    registry: Registry | None = None,
 ) -> dict[str, Any]:
     """Varre o diretório do Lake e extrai o payload consolidado de metadados."""
-    sources_dict: dict[str, dict[str, Any]] = {}
-    datasets_list: list[dict[str, Any]] = []
-    columns_list: list[dict[str, Any]] = []
-    samples_list: list[dict[str, Any]] = []
-
-    if not lake_dir.is_dir():
-        logger.warning("Diretório do Lake %s não existe.", lake_dir)
-        return {
-            "sources": [],
-            "datasets": [],
-            "columns": [],
-            "samples": [],
-        }
-
-    # Busca todos os descritores _dataset.json
-    descriptor_paths = sorted(lake_dir.rglob("_dataset.json"))
-    for desc_path in descriptor_paths:
-        meta = _extract_dataset_metadata(
-            desc_path, sample_size=sample_size, lake_root=lake_dir
-        )
-        if not meta:
-            continue
-
-        src = meta["source"]
-        if source_filter and src["id"] != source_filter:
-            continue
-
-        sources_dict[src["id"]] = src
-        datasets_list.append(meta["dataset"])
-        columns_list.extend(meta["columns"])
-        if meta["sample"]["linhas_amostra"] or meta["sample"]["schema_arrow_json"]:
-            samples_list.append(meta["sample"])
-
-    return {
-        "sources": list(sources_dict.values()),
-        "datasets": datasets_list,
-        "columns": columns_list,
-        "samples": samples_list,
-    }
+    return build_catalog(lake_dir, source_filter, sample_size, registry).payload
 
 
 def send_catalog_payload(
@@ -336,6 +509,15 @@ def cmd_catalog_sync(
             help="Filtrar por ID de fonte específica (ex: cvm, anp, b3).",
         ),
     ] = None,
+    registry_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--registry",
+            help="registry.json a usar no lugar dos fetchers instalados "
+            "(saída de 'quantilica registry export --json').",
+            envvar="QUANTILICA_REGISTRY_FILE",
+        ),
+    ] = None,
     sample_size: Annotated[
         int,
         typer.Option(
@@ -358,9 +540,13 @@ def cmd_catalog_sync(
     )
 
     safe_sample_size = max(0, min(sample_size, 20))
-    payload = extract_catalog_payload(
-        target_lake, source_filter=source, sample_size=safe_sample_size
+    build = build_catalog(
+        target_lake,
+        source_filter=source,
+        sample_size=safe_sample_size,
+        registry=load_registry(registry_file),
     )
+    payload = build.payload
 
     sources_count = len(payload.get("sources", []))
     datasets_count = len(payload.get("datasets", []))
@@ -374,7 +560,22 @@ def cmd_catalog_sync(
     table.add_row("Datasets Parquet", str(datasets_count))
     table.add_row("Colunas e Chaves", str(columns_count))
     table.add_row("Amostras de Dados", str(samples_count))
+    table.add_row(
+        "Deixados de fora (redistribuição restrita)",
+        str(sum(build.restricted.values())),
+    )
+    table.add_row("Fontes desconhecidas do registro", str(len(build.unknown)))
     console.print(table)
+    if build.restricted:
+        console.print(
+            "[yellow]Fora do payload (restrita):[/yellow] "
+            + ", ".join(f"{k} ({v})" for k, v in sorted(build.restricted.items()))
+        )
+    if build.unknown:
+        console.print(
+            "[yellow]Sem registro (metadados nulos):[/yellow] "
+            + ", ".join(sorted(build.unknown))
+        )
 
     if dry_run:
         console.print(

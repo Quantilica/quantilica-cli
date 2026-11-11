@@ -9,6 +9,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ### Alterado
 
+- `quantilica catalog sync` resolve o `source_id` do lake pelo registro de fetchers (apelido vira id canônico, e o id do dataset acompanha) e preenche a fonte com `nome`, `orgao`, `licenca`, `homepage`, `dominio` e `cadencia` do `FetcherInfo`; fonte fora do registro mantém o id e vai com metadados nulos. Deixou de inventar `Geral`/`Open Data`/`mensal`/`nacional`. Cada dataset leva `fetcher_id` e `total_linhas` (soma de `num_rows` dos Parquets). Fonte de redistribuição restrita não entra no payload. Novo `--registry` aponta um `registry.json` no lugar dos fetchers instalados; o resumo do `--dry-run` mostra o que ficou de fora e o que é desconhecido.
 - `quantilica sources install` consulta o índice da Quantilica antes do PyPI (uv: `--default-index` PyPI + `--index` Quantilica + `first-index`), e recusa instalar o que esse índice não publica, fechando o risco de dependency confusion; o erro de instalação informa quando o nome digitado foi lido como `<nome>-fetcher`.
 - `quantilica sources install/uninstall` deixou de depender de uma lista de
   fetchers escrita à mão: o nome curto vira `<id>-fetcher` (regra do registro),
