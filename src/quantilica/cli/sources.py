@@ -26,6 +26,7 @@ console = Console()
 FETCHER_GROUP = "quantilica.fetchers"
 LAKE_GROUP = "quantilica.lake"
 DEFAULT_INDEX_URL = "https://index.quantilica.com/simple/"
+PYPI_INDEX_URL = "https://pypi.org/simple"
 
 # Tabela manual: só o que a regra ``<nome>-fetcher`` não resolve. Os fetchers
 # em si NÃO são listados aqui: os instalados vêm dos entry points
@@ -170,12 +171,33 @@ def get_index_url() -> str:
     return os.environ.get("QUANTILICA_INDEX_URL", DEFAULT_INDEX_URL)
 
 
-def install_package(dist_name: str, index_url: str | None = None) -> None:
+def uv_index_args(idx: str) -> list[str]:
+    """Argumentos do uv que fazem o índice da Quantilica ser consultado primeiro.
+
+    No uv, ``--index`` tem prioridade sobre ``--default-index``; com
+    ``first-index`` um pacote achado no primeiro índice não é buscado no
+    segundo. Assim um homônimo no PyPI não substitui o da Quantilica, e
+    dependências comuns (``requests``...) ainda vêm do PyPI.
+    """
+    return [
+        "--default-index",
+        PYPI_INDEX_URL,
+        "--index",
+        idx,
+        "--index-strategy",
+        "first-index",
+    ]
+
+
+def install_package(
+    dist_name: str, index_url: str | None = None, requested: str | None = None
+) -> None:
     """Instala um pacote Python usando uv pip install se disponível, ou pip.
 
     Args:
         dist_name: Nome do pacote a instalar.
         index_url: URL do índice pip. Padrão para a URL do índice global se não especificada.
+        requested: Nome digitado pelo usuário, citado no erro se difere de ``dist_name``.
 
     Raises:
         RuntimeError: Se a instalação falhar.
@@ -194,11 +216,13 @@ def install_package(dist_name: str, index_url: str | None = None) -> None:
             "install",
             "--python",
             sys.executable,
-            "--extra-index-url",
-            idx,
+            *uv_index_args(idx),
             dist_name,
         ]
     else:
+        # pip não tem prioridade entre índices: aqui a proteção contra
+        # dependency confusion é só parcial (o PyPI continua sendo consultado
+        # em pé de igualdade). O caminho protegido é o do uv.
         cmd = [
             sys.executable,
             "-m",
@@ -212,9 +236,10 @@ def install_package(dist_name: str, index_url: str | None = None) -> None:
     console.print(f"[cyan]Instalando {escape(dist_name)}...[/cyan]")
     res = subprocess.run(cmd, env=env)
     if res.returncode != 0:
-        raise RuntimeError(
-            f"Falha ao instalar {dist_name} (código de saída: {res.returncode})"
-        )
+        msg = f"Falha ao instalar {dist_name} (código de saída: {res.returncode})"
+        if requested:
+            msg += f". '{requested}' foi lido como '{dist_name}'"
+        raise RuntimeError(msg)
 
 
 def uninstall_package(dist_name: str) -> None:
@@ -398,6 +423,11 @@ def cmd_install(
         install_package(spec)
     except Exception as exc:
         console.print(f"[red]Erro na instalação:[/red] {exc}")
+        if source != dist_name:
+            console.print(
+                f"[yellow]'{escape(source)}' foi lido como "
+                f"'{escape(dist_name)}'.[/yellow]"
+            )
         raise typer.Exit(1) from exc
 
     # Gravar no arquivo de estado (sem extras: o estado registra só a distribuição)

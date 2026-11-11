@@ -254,3 +254,31 @@ def test_install_package_imprime_extra_sem_engolir_colchete(capsys):
     with patch("quantilica.cli.sources.subprocess.run", return_value=cp):
         sources.install_package("pdet-fetcher[analysis]", index_url="https://i/simple/")
     assert "pdet-fetcher[analysis]" in " ".join(capsys.readouterr().out.split())
+
+
+def test_install_package_uv_prioriza_indice_da_quantilica():
+    from quantilica.cli import sources
+
+    cp = MagicMock(returncode=0)
+    with (
+        patch("quantilica.cli.sources.shutil.which", return_value="/usr/bin/uv"),
+        patch("quantilica.cli.sources.subprocess.run", return_value=cp) as run,
+    ):
+        sources.install_package("anp-fetcher", index_url="https://q/simple/")
+    cmd = run.call_args.args[0]
+    assert cmd[cmd.index("--index") + 1] == "https://q/simple/"
+    assert cmd[cmd.index("--default-index") + 1] == sources.PYPI_INDEX_URL
+    assert cmd[cmd.index("--index-strategy") + 1] == "first-index"
+    assert "--extra-index-url" not in cmd and "--index-url" not in cmd
+
+
+def test_install_package_erro_cita_nome_digitado_e_expandido():
+    from quantilica.cli import sources
+
+    cp = MagicMock(returncode=1)
+    with patch("quantilica.cli.sources.subprocess.run", return_value=cp):
+        with pytest.raises(RuntimeError) as exc:
+            sources.install_package(
+                "foo-fetcher", index_url="https://q/simple/", requested="foo"
+            )
+    assert "'foo' foi lido como 'foo-fetcher'" in str(exc.value)
