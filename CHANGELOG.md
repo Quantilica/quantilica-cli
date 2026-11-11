@@ -28,7 +28,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
   quando algum arquivo falha. Se ao menos um arquivo foi baixado e outros
   falharam, sai com o código `3` (`EXIT_SYNC_PARTIAL`, "download parcial": o que
   baixou está íntegro em disco); se nada foi baixado, sai com `1`. Antes saía
-  com `0` listando os erros, e quem automatiza a coleta (cron, CI) considerava a
+  com `0` listando os erros, e quem automatiza a coleta (agendador, integração contínua) considerava a
   execução bem-sucedida. **Mudança de contrato:** scripts que tratam
   qualquer código diferente de 0 como falha total devem tratar o `3` como
   parcial. O `pipeline` converte o que baixou mesmo com download parcial e
