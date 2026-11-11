@@ -7,6 +7,13 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+### Adicionado
+
+- `--workers` do `sync` e do `pipeline` aceita a variável de ambiente
+  `QUANTILICA_SYNC_WORKERS` (`SYNC_WORKERS_ENVVAR`). A flag explícita vence a
+  variável, que vence o padrão do comando (4, ou o que o fetcher definir). Serve
+  a quem agenda a coleta e não pode acrescentar argumentos à linha de comando.
+
 ### Corrigido
 
 - `quantilica catalog sync` envia só para `POST /api/v2/admin/catalog/sync`. A

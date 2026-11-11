@@ -97,3 +97,63 @@ def test_pipeline_falha_total_nao_converte(
     )
     assert result.exit_code == 1, result.output
     assert converted == []
+
+
+def _spy_workers(app) -> list[int]:
+    seen: list[int] = []
+
+    def download(entries, output_dir, workers=4):
+        seen.append(workers)
+        return len(entries), len(entries), []
+
+    app.download_datasets = download  # type: ignore[method-assign]
+    return seen
+
+
+def test_sync_workers_vem_da_variavel_de_ambiente(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = make_app()
+    seen = _spy_workers(app)
+    monkeypatch.setenv("QUANTILICA_SYNC_WORKERS", "1")
+    root = _grouped(app.app)
+    assert runner.invoke(root, ["fd", "sync", "-o", str(tmp_path)]).exit_code == 0
+    # a flag explícita vence a variável
+    runner.invoke(root, ["fd", "sync", "--workers", "3", "-o", str(tmp_path)])
+    assert seen == [1, 3]
+
+
+def test_sync_workers_padrao_sem_variavel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = make_app()
+    seen = _spy_workers(app)
+    monkeypatch.delenv("QUANTILICA_SYNC_WORKERS", raising=False)
+    runner.invoke(_grouped(app.app), ["fd", "sync", "-o", str(tmp_path)])
+    assert seen == [4]
+
+
+def test_pipeline_workers_vem_da_variavel_de_ambiente(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = make_app()
+    seen = _spy_workers(app)
+
+    @app.command_pipeline
+    def conv(data_dir: Path, parquet_dir: Path) -> None:
+        pass
+
+    monkeypatch.setenv("QUANTILICA_SYNC_WORKERS", "2")
+    result = runner.invoke(
+        _grouped(app.app),
+        [
+            "fd",
+            "pipeline",
+            "-o",
+            str(tmp_path / "r"),
+            "--parquet-dir",
+            str(tmp_path / "l"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert seen == [2]

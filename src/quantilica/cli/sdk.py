@@ -71,6 +71,7 @@ def derive_fetcher_info(name: str) -> FetcherInfo:
 
 __all__ = [
     "EXIT_SYNC_PARTIAL",
+    "SYNC_WORKERS_ENVVAR",
     "derive_fetcher_info",
     "CheckPlan",
     "CheckPlanItem",
@@ -89,6 +90,11 @@ __all__ = [
 # distinto de 0 faz a falha parcial aparecer como alerta. Se nada baixou, o
 # código é 1 (falha total). 124/130/143 já são de timeout/sinal e 75/78 do cron.
 EXIT_SYNC_PARTIAL = 3
+
+# Variável de ambiente que define ``--workers`` do ``sync``/``pipeline`` sem
+# argumento extra na linha de comando (o cron não pode passar flags). A flag
+# explícita vence a variável, que vence o padrão do comando.
+SYNC_WORKERS_ENVVAR = "QUANTILICA_SYNC_WORKERS"
 
 
 @dataclass(frozen=True)
@@ -863,7 +869,12 @@ class FetcherApp:
                 ),
             ] = None,
             workers: Annotated[
-                int, typer.Option("--workers", help="Downloads paralelos")
+                int,
+                typer.Option(
+                    "--workers",
+                    envvar=SYNC_WORKERS_ENVVAR,
+                    help="Downloads paralelos (padrão: $QUANTILICA_SYNC_WORKERS ou 4)",
+                ),
             ] = 4,
             dry_run: Annotated[
                 bool, typer.Option("--dry-run", help="Listar arquivos sem baixar")
@@ -1702,7 +1713,12 @@ class FetcherApp:
                 bool, typer.Option("--dry-run", help="Listar arquivos sem baixar")
             ] = False,
             workers: Annotated[
-                int, typer.Option("--workers", help="Downloads paralelos")
+                int,
+                typer.Option(
+                    "--workers",
+                    envvar=SYNC_WORKERS_ENVVAR,
+                    help="Downloads paralelos (padrão: $QUANTILICA_SYNC_WORKERS ou 4)",
+                ),
             ] = 4,
             from_plan: Annotated[
                 Path | None,
