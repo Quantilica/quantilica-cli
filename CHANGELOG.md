@@ -7,6 +7,13 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+### Corrigido
+
+- `quantilica catalog sync` envia só para `POST /api/v2/admin/catalog/sync`. A
+  URL de reserva `/api/v2/catalog/sync` (e a tentativa em 404 que existia por
+  causa dela) saiu: o portal removeu esse caminho. Um 404 agora falha na hora
+  com a mensagem do servidor.
+
 ## [0.18.0] - 2026-11-10
 
 ### Adicionado

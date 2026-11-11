@@ -177,3 +177,56 @@ def test_catalog_sync_empty_parquet(tmp_path: Path) -> None:
     )
     assert res.exit_code == 0
     assert "anac/aeronaves" in res.output
+
+
+def _fake_urlopen(chamadas: list[str], *, erro_http: int | None = None):
+    import io
+    import urllib.error
+
+    def urlopen(req, timeout=None):
+        chamadas.append(req.full_url)
+        if erro_http is not None:
+            raise urllib.error.HTTPError(
+                req.full_url, erro_http, "erro", {}, io.BytesIO(b'{"detail": "x"}')
+            )
+        resp = io.BytesIO(b'{"status": "success"}')
+        resp.__enter__ = lambda self=resp: self  # type: ignore[method-assign]
+        resp.__exit__ = lambda *a: None  # type: ignore[method-assign]
+        return resp
+
+    return urlopen
+
+
+def test_send_catalog_payload_usa_so_o_caminho_administrativo() -> None:
+    from quantilica.cli.catalog import send_catalog_payload
+
+    chamadas: list[str] = []
+    with patch("urllib.request.urlopen", _fake_urlopen(chamadas)):
+        out = send_catalog_payload("https://portal.test/", {"sources": []}, "k")
+    assert out == {"status": "success"}
+    assert chamadas == ["https://portal.test/api/v2/admin/catalog/sync"]
+
+
+def test_send_catalog_payload_404_nao_tenta_outro_caminho() -> None:
+    import pytest
+
+    from quantilica.cli.catalog import send_catalog_payload
+
+    chamadas: list[str] = []
+    with patch("urllib.request.urlopen", _fake_urlopen(chamadas, erro_http=404)):
+        with pytest.raises(RuntimeError, match="HTTP 404"):
+            send_catalog_payload("https://portal.test", {"sources": []}, "k")
+    assert chamadas == ["https://portal.test/api/v2/admin/catalog/sync"]
+
+
+def test_send_catalog_payload_erro_de_conexao_vira_runtime_error() -> None:
+    import pytest
+
+    from quantilica.cli.catalog import send_catalog_payload
+
+    def falha(req, timeout=None):
+        raise OSError("sem rede")
+
+    with patch("urllib.request.urlopen", falha):
+        with pytest.raises(RuntimeError, match="Erro de conexão"):
+            send_catalog_payload("https://portal.test", {"sources": []})

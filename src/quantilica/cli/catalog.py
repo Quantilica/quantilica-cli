@@ -280,11 +280,7 @@ def send_catalog_payload(
     api_key: str | None = None,
 ) -> dict[str, Any]:
     """Envia o payload via HTTP POST para o endpoint de sincronização do Portal."""
-    endpoints = [
-        f"{portal_url.rstrip('/')}/api/v2/admin/catalog/sync",
-        f"{portal_url.rstrip('/')}/api/v2/catalog/sync",
-    ]
-
+    url = f"{portal_url.rstrip('/')}/api/v2/admin/catalog/sync"
     body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
@@ -293,31 +289,17 @@ def send_catalog_payload(
     if api_key:
         headers["Authorization"] = f"Bearer {api_key.strip()}"
 
-    last_error: Exception | None = None
-
-    for url in endpoints:
-        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                resp_text = resp.read().decode("utf-8")
-                return json.loads(resp_text)
-        except urllib.error.HTTPError as exc:
-            # Se for 404 tenta o próximo endpoint
-            if exc.code == 404 and url != endpoints[-1]:
-                continue
-            err_body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(
-                f"Falha na sincronização HTTP {exc.code} em {url}: {err_body}"
-            ) from exc
-        except Exception as exc:
-            last_error = exc
-            if url != endpoints[-1]:
-                continue
-            raise RuntimeError(f"Erro de conexão com o portal em {url}: {exc}") from exc
-
-    if last_error:
-        raise last_error
-    return {}
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"Falha na sincronização HTTP {exc.code} em {url}: {err_body}"
+        ) from exc
+    except Exception as exc:
+        raise RuntimeError(f"Erro de conexão com o portal em {url}: {exc}") from exc
 
 
 @app.command("sync")
