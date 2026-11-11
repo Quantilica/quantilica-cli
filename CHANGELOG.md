@@ -7,6 +7,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+## [0.19.0] - 2026-11-11
+
 ### Adicionado
 
 - `--workers` do `sync` e do `pipeline` aceita a variável de ambiente
