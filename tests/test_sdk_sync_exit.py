@@ -157,3 +157,63 @@ def test_pipeline_workers_vem_da_variavel_de_ambiente(
     )
     assert result.exit_code == 0, result.output
     assert seen == [2]
+
+
+@pytest.mark.parametrize("valor", ["0", "-2"])
+def test_sync_workers_invalido_pela_variavel_da_erro_claro(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, valor: str
+) -> None:
+    app = make_app()
+    seen = _spy_workers(app)
+    monkeypatch.setenv("QUANTILICA_SYNC_WORKERS", valor)
+    result = runner.invoke(_grouped(app.app), ["fd", "sync", "-o", str(tmp_path)])
+    assert result.exit_code == 2, result.output
+    assert "workers" in result.output.lower()
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert seen == []
+
+
+def test_pipeline_workers_invalido_da_erro_claro(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = make_app()
+    seen = _spy_workers(app)
+
+    @app.command_pipeline
+    def conv(data_dir: Path, parquet_dir: Path) -> None:
+        pass
+
+    monkeypatch.setenv("QUANTILICA_SYNC_WORKERS", "0")
+    result = runner.invoke(
+        _grouped(app.app),
+        [
+            "fd",
+            "pipeline",
+            "-o",
+            str(tmp_path / "r"),
+            "--parquet-dir",
+            str(tmp_path / "l"),
+        ],
+    )
+    assert result.exit_code == 2, result.output
+    assert seen == []
+
+
+def test_sync_help_mostra_o_padrao_do_fetcher_e_a_variavel() -> None:
+    """O padrão exibido é o do fetcher (ex.: capes muda o default para 2)."""
+    app = make_app()
+    for command in app.app.registered_commands:
+        if command.name == "sync" and command.callback is not None:
+            code = command.callback.__code__
+            names = code.co_varnames[: code.co_argcount]
+            defaults = list(command.callback.__defaults__)
+            defaults[names.index("workers") - (len(names) - len(defaults))] = 2
+            command.callback.__defaults__ = tuple(defaults)
+    result = runner.invoke(
+        _grouped(app.app),
+        ["fd", "sync", "--help"],
+        env={"COLUMNS": "200", "NO_COLOR": "1"},
+    )
+    out = " ".join(result.output.split())
+    assert "QUANTILICA_SYNC_WORKERS" in out
+    assert "default: 2" in out

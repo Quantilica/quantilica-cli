@@ -873,7 +873,9 @@ class FetcherApp:
                 typer.Option(
                     "--workers",
                     envvar=SYNC_WORKERS_ENVVAR,
-                    help="Downloads paralelos (padrão: $QUANTILICA_SYNC_WORKERS ou 4)",
+                    min=1,
+                    help="Downloads paralelos (o padrão e a variável de ambiente "
+                    "aparecem ao lado).",
                 ),
             ] = 4,
             dry_run: Annotated[
@@ -1717,7 +1719,9 @@ class FetcherApp:
                 typer.Option(
                     "--workers",
                     envvar=SYNC_WORKERS_ENVVAR,
-                    help="Downloads paralelos (padrão: $QUANTILICA_SYNC_WORKERS ou 4)",
+                    min=1,
+                    help="Downloads paralelos (o padrão e a variável de ambiente "
+                    "aparecem ao lado).",
                 ),
             ] = 4,
             from_plan: Annotated[

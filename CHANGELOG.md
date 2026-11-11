@@ -13,6 +13,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
   `QUANTILICA_SYNC_WORKERS` (`SYNC_WORKERS_ENVVAR`). A flag explícita vence a
   variável, que vence o padrão do comando (4, ou o que o fetcher definir). Serve
   a quem agenda a coleta e não pode acrescentar argumentos à linha de comando.
+  O valor mínimo é 1: `0` ou negativo (pela flag ou pela variável) dá erro de uso
+  (código 2) em vez de traceback, e o `--help` mostra o padrão do fetcher e a variável.
 
 ### Corrigido
 
