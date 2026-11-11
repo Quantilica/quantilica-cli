@@ -27,7 +27,8 @@ from quantilica.cli.sources import (
     cmd_doctor,
     cmd_install,
     cmd_uninstall,
-    fetch_remote_sources,
+    fetch_remote_sources_or_none,
+    local_sources,
 )
 
 FETCHER_GROUP = "quantilica.fetchers"
@@ -189,7 +190,13 @@ def list_sources(
     plugins = _load_plugins(FETCHER_GROUP)
 
     if remote:
-        remote_registry = fetch_remote_sources()
+        remote_registry = fetch_remote_sources_or_none()
+        if remote_registry is None:
+            console.print(
+                "[yellow]O índice não respondeu; a lista abaixo traz só os "
+                "apelidos conhecidos e os fetchers instalados.[/yellow]"
+            )
+            remote_registry = local_sources()
         table = Table(title="Todas as fontes de dados conhecidas", show_header=True)
         table.add_column("Fonte", style="cyan")
         table.add_column("Pacote", style="magenta")

@@ -39,7 +39,19 @@ def test_load_save_state(temp_config_dir: Path):
 def test_fetch_remote_sources_fallback():
     with patch("urllib.request.urlopen", side_effect=Exception("Network error")):
         remote = fetch_remote_sources()
-        assert remote == SOURCES_REGISTRY
+        # Sem o índice: a tabela manual mais o que estiver instalado.
+        assert SOURCES_REGISTRY.items() <= remote.items()
+
+
+def test_list_remote_avisa_quando_o_indice_nao_responde():
+    from typer.testing import CliRunner
+
+    from quantilica.cli.cli import app
+
+    with patch("urllib.request.urlopen", side_effect=Exception("Network error")):
+        result = CliRunner().invoke(app, ["list-sources", "--remote"])
+    assert result.exit_code == 0
+    assert "índice não respondeu" in " ".join(result.output.split())
 
 
 def test_fetch_remote_sources_success():

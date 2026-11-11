@@ -243,12 +243,8 @@ def uninstall_package(dist_name: str) -> None:
         )
 
 
-def fetch_remote_sources() -> dict[str, str]:
-    """Obtém a lista remota de fontes disponíveis do arquivo sources.json do índice.
-
-    Returns:
-        Um dicionário mapeando os nomes das fontes para os nomes das distribuições.
-    """
+def fetch_remote_sources_or_none() -> dict[str, str] | None:
+    """Lê o ``sources.json`` do índice; ``None`` quando o índice não responde."""
     index_url = get_index_url()
     # Converte simple/ index url para URL base de sources.json
     base_url = index_url.rstrip("/")
@@ -268,7 +264,27 @@ def fetch_remote_sources() -> dict[str, str]:
     except Exception:
         pass
 
-    return SOURCES_REGISTRY.copy()
+    return None
+
+
+def fetch_remote_sources() -> dict[str, str]:
+    """Obtém a lista remota de fontes disponíveis do arquivo sources.json do índice.
+
+    Sem resposta do índice, devolve só o que se conhece localmente: a tabela
+    manual e os fetchers instalados. A lista completa vive no índice.
+
+    Returns:
+        Um dicionário mapeando os nomes das fontes para os nomes das distribuições.
+    """
+    remote = fetch_remote_sources_or_none()
+    if remote is not None:
+        return remote
+    return local_sources()
+
+
+def local_sources() -> dict[str, str]:
+    """Fontes conhecidas sem o índice: tabela manual e fetchers instalados."""
+    return {**SOURCES_REGISTRY, **installed_declared_names()}
 
 
 def reexec_cli(args: list[str]) -> None:
