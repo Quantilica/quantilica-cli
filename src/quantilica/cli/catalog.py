@@ -312,12 +312,12 @@ def _extract_dataset_metadata(
 
     if lake_root:
         try:
-            lake_path = str(dataset_dir.relative_to(lake_root))
+            lake_path = dataset_dir.relative_to(lake_root).as_posix()
         except ValueError:
             lake_path = f"{raw_source_id}/{dataset_id}"
     else:
         try:
-            lake_path = str(dataset_dir.relative_to(dataset_dir.parent.parent))
+            lake_path = dataset_dir.relative_to(dataset_dir.parent.parent).as_posix()
         except ValueError:
             lake_path = f"{raw_source_id}/{dataset_id}"
 
@@ -524,9 +524,10 @@ def cmd_catalog_sync(
         int,
         typer.Option(
             "--sample-size",
-            help="Número de linhas de amostra a extrair (máx 20).",
+            help="Número de linhas de amostra a extrair (máx 20). O padrão é 0: "
+            "as amostras são linhas cruas e podem ter dados pessoais.",
         ),
-    ] = 20,
+    ] = 0,
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -540,6 +541,17 @@ def cmd_catalog_sync(
     console.print(
         f"[cyan]Varrendo Universal Hive Parquet Lake em:[/cyan] {target_lake}"
     )
+
+    try:
+        import pyarrow.parquet  # noqa: F401
+    except ImportError:
+        # Sem pyarrow o payload sai sem colunas, sem amostras e com zero
+        # linhas, e o envio apagaria esses dados no portal.
+        console.print(
+            "[red]pyarrow não está instalado: nada foi lido.[/red] "
+            "Instale o extra 'lake' (quantilica-cli[lake])."
+        )
+        raise typer.Exit(1) from None
 
     safe_sample_size = max(0, min(sample_size, 20))
     build = build_catalog(

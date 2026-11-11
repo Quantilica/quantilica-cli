@@ -16,6 +16,12 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
   então uma fonte nova é aceita sem editar o código. A tabela `SOURCES_REGISTRY`
   guarda só o que foge da regra (`sql` e apelidos antigos como `bcb`, `rfb`,
   `td`). Os nomes aceitos antes continuam levando à mesma distribuição.
+- `quantilica catalog sync` não envia amostras por padrão (`--sample-size` passou de 20 para 0): a amostra é linha crua do Parquet e, em fontes como CNPJ, TSE, CNES e Tesouro Direto, traz CPF, nome, e-mail e telefone.
+- `quantilica catalog sync` recusa rodar sem `pyarrow` (antes saía com código 0, sem colunas, sem amostras e com zero linhas); o extra `lake` declara `pyarrow`.
+
+### Corrigido
+
+- `lake_path` do `catalog sync` sai com `/` também no Windows (antes, `anac\aero-caracteristicas`).
 
 ## [0.19.0] - 2026-11-11
 

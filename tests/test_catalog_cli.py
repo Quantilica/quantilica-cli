@@ -161,7 +161,16 @@ def test_catalog_sync_parquet_with_decimals_and_binary(tmp_path: Path) -> None:
     pq.write_table(tbl, dataset_dir / "part.parquet")
 
     res = runner.invoke(
-        app, ["catalog", "sync", "--lake-dir", str(tmp_path), "--dry-run"]
+        app,
+        [
+            "catalog",
+            "sync",
+            "--lake-dir",
+            str(tmp_path),
+            "--sample-size",
+            "20",
+            "--dry-run",
+        ],
     )
     assert res.exit_code == 0
     assert "cvm/fundos_invest" in res.output
@@ -268,3 +277,40 @@ def test_catalog_sync_recusa_envio_com_registro_vazio(
     assert res.exit_code == 1
     assert "Registro de fetchers vazio" in " ".join(res.output.split())
     mock_send.assert_not_called()
+
+
+def _dataset_com_linha(tmp_path: Path) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    dataset_dir = tmp_path / "cvm" / "cadastro"
+    dataset_dir.mkdir(parents=True)
+    descriptor = {"source_id": "cvm", "dataset_id": "cadastro", "alias": "cadastro"}
+    (dataset_dir / "_dataset.json").write_text(json.dumps(descriptor), encoding="utf-8")
+    pq.write_table(pa.table({"nome": ["Fulano de Tal"]}), dataset_dir / "part.parquet")
+
+
+def test_catalog_sync_sem_amostras_por_padrao(tmp_path: Path) -> None:
+    """Amostra é linha crua e pode ter dado pessoal: só sai se pedida."""
+    _dataset_com_linha(tmp_path)
+    res = runner.invoke(
+        app, ["catalog", "sync", "--lake-dir", str(tmp_path), "--dry-run"]
+    )
+    assert res.exit_code == 0
+    assert "cvm/cadastro" in res.output
+    assert "Fulano de Tal" not in res.output
+
+
+def test_catalog_sync_sem_pyarrow_recusa(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sem pyarrow o payload sairia sem colunas e com zero linhas."""
+    import sys
+
+    _dataset_com_linha(tmp_path)
+    monkeypatch.setitem(sys.modules, "pyarrow.parquet", None)
+    res = runner.invoke(
+        app, ["catalog", "sync", "--lake-dir", str(tmp_path), "--dry-run"]
+    )
+    assert res.exit_code == 1
+    assert "pyarrow" in res.output
