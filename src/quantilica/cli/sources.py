@@ -27,42 +27,39 @@ FETCHER_GROUP = "quantilica.fetchers"
 LAKE_GROUP = "quantilica.lake"
 DEFAULT_INDEX_URL = "https://index.quantilica.com/simple/"
 
-# Mapeamento estático padrão de comandos CLI para nome das distribuições
+# Tabela manual: só o que a regra ``<nome>-fetcher`` não resolve. Os fetchers
+# em si NÃO são listados aqui: os instalados vêm dos entry points
+# (``FetcherInfo``) e os ausentes saem da regra em ``resolve_dist``.
 SOURCES_REGISTRY: dict[str, str] = {
-    "anac": "anac-fetcher",
-    "anp": "anp-fetcher",
-    "antt": "antt-fetcher",
-    "b3": "b3-fetcher",
-    "bcb": "bcb-sgs-fetcher",
-    "bcb-microdados": "bcb-microdados-fetcher",
-    "bcb_microdados": "bcb-microdados-fetcher",
-    "bcb-sgs": "bcb-sgs-fetcher",
-    "capes": "capes-fetcher",
-    "comex": "comex-fetcher",
-    "cvm": "cvm-fetcher",
-    "datasus": "datasus-fetcher",
-    "datasus-sigtap": "sigtap-fetcher",
-    "inep": "inep-fetcher",
-    "infosiga": "infosiga-fetcher",
-    "inmet": "inmet-fetcher",
-    "ipeadata": "ipeadata-fetcher",
-    "loterias": "loterias-fetcher",
-    "ons": "ons-fetcher",
-    "pdet": "pdet-fetcher",
-    "pgfn": "pgfn-fetcher",
-    "rfb": "rfb-cnpj-fetcher",
-    "rfb-cnpj": "rfb-cnpj-fetcher",
-    "rtn": "rtn-fetcher",
-    "sidra": "sidra-fetcher",
-    "sigtap": "sigtap-fetcher",
+    # Pacote que não é fetcher (a distribuição não termina em ``-fetcher``).
     "sql": "quantilica-sql",
+    # Apelidos de nomes antigos que levam a outro id; ficam para o caso de o
+    # fetcher ainda não estar instalado (sem entry point para consultar).
+    "bcb": "bcb-sgs-fetcher",
+    "bcb_microdados": "bcb-microdados-fetcher",
+    "datasus-sigtap": "sigtap-fetcher",
+    "rfb": "rfb-cnpj-fetcher",
     "td": "tesouro-direto-fetcher",
-    "tesouro-direto": "tesouro-direto-fetcher",
     "tesouro_direto": "tesouro-direto-fetcher",
-    "transparencia-sp": "transparencia-sp-fetcher",
     "transparencia_sp": "transparencia-sp-fetcher",
-    "tse": "tse-fetcher",
 }
+
+FETCHER_SUFFIX = "-fetcher"
+
+
+def resolve_dist(source: str, registry: dict[str, str] | None = None) -> str:
+    """Resolve o nome curto de uma fonte para a distribuição pip.
+
+    Ordem: tabela (``registry`` ou ``SOURCES_REGISTRY``), nome que já é uma
+    distribuição (termina em ``-fetcher`` ou começa com ``quantilica-``, passa
+    como veio) e, por fim, a regra do registro: ``<nome>-fetcher``.
+    """
+    table = SOURCES_REGISTRY if registry is None else registry
+    if source in table:
+        return table[source]
+    if source.endswith(FETCHER_SUFFIX) or source.startswith("quantilica-"):
+        return source
+    return f"{source}{FETCHER_SUFFIX}"
 
 
 def get_config_dir() -> Path:
@@ -304,8 +301,8 @@ def installed_declared_names() -> dict[str, str]:
 def _merged_registry() -> dict[str, str]:
     """Combina o registro remoto, a tabela manual e o ``FetcherInfo`` instalado.
 
-    A tabela manual (``SOURCES_REGISTRY``) é a reserva para instalar fontes
-    ausentes; para o que está instalado, id e apelidos do ``FetcherInfo`` mandam.
+    A tabela manual (``SOURCES_REGISTRY``) cobre o que a regra
+    ``<nome>-fetcher`` não alcança (``resolve_dist``); para o que está instalado, id e apelidos do ``FetcherInfo`` mandam.
     """
     return {
         **fetch_remote_sources(),
@@ -364,7 +361,7 @@ def cmd_install(
 ) -> None:
     """Instala uma fonte de dados (fetcher) sob demanda."""
     registry = _merged_registry()
-    dist_name = registry.get(source, source)
+    dist_name = resolve_dist(source, registry)
     spec = _dist_spec(dist_name, extra or [])
 
     installed_eps = get_installed_entry_points()
@@ -413,7 +410,7 @@ def cmd_uninstall(
 ) -> None:
     """Desinstala uma fonte de dados (fetcher)."""
     registry = _merged_registry()
-    dist_name = registry.get(source, source)
+    dist_name = resolve_dist(source, registry)
 
     try:
         uninstall_package(dist_name)
@@ -474,7 +471,7 @@ def _print_lake_status(sources: set[str], registered: dict[str, str]) -> None:
     lake_eps = get_lake_entry_points()
     console.print("\n[bold]Lake (conversor quantilica.lake):[/bold]")
     for name in sorted(sources):
-        dist = registered.get(name) or SOURCES_REGISTRY.get(name)
+        dist = registered.get(name) or resolve_dist(name)
         if has_lake_converter(name, lake_eps, dist):
             console.print(f" - {name}: [green]✓[/green] lake: sim")
         else:

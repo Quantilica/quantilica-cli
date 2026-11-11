@@ -151,7 +151,7 @@ def test_fonte_instalada_usa_apelidos_do_info(fake_eps, monkeypatch):
     monkeypatch.setattr(sources, "fetch_remote_sources", lambda: {})
     merged = sources._merged_registry()
     assert merged["tddata"] == "tesouro-direto-fetcher"
-    assert merged["anp"] == "anp-fetcher"  # reserva manual
+    assert sources.resolve_dist("anp", merged) == "anp-fetcher"  # regra
 
 
 def test_apelidos_do_info_instalado_nao_contradizem_a_tabela():

@@ -7,6 +7,14 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+### Alterado
+
+- `quantilica sources install/uninstall` deixou de depender de uma lista de
+  fetchers escrita à mão: o nome curto vira `<id>-fetcher` (regra do registro),
+  então uma fonte nova é aceita sem editar o código. A tabela `SOURCES_REGISTRY`
+  guarda só o que foge da regra (`sql` e apelidos antigos como `bcb`, `rfb`,
+  `td`). Os nomes aceitos antes continuam levando à mesma distribuição.
+
 ## [0.19.0] - 2026-11-11
 
 ### Adicionado
