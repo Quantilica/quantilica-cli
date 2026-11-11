@@ -282,3 +282,43 @@ def test_install_package_erro_cita_nome_digitado_e_expandido():
                 "foo-fetcher", index_url="https://q/simple/", requested="foo"
             )
     assert "'foo' foi lido como 'foo-fetcher'" in str(exc.value)
+
+
+@pytest.mark.indice_real
+def test_index_has_normaliza_o_nome_e_falha_fechado():
+    from quantilica.cli import sources
+
+    vistos = []
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _abre(req, timeout=0):
+        vistos.append(req.full_url)
+        return _Resp()
+
+    with patch("urllib.request.urlopen", side_effect=_abre):
+        assert sources.index_has(
+            "Foo_Fetcher[analysis]>=1.0", "https://i.example/simple/"
+        )
+    assert vistos == ["https://i.example/simple/foo-fetcher/"]
+
+    with patch("urllib.request.urlopen", side_effect=Exception("404")):
+        assert not sources.index_has("foo-fetcher", "https://i.example/simple/")
+
+
+def test_install_recusa_o_que_o_indice_nao_publica(monkeypatch):
+    from quantilica.cli import sources
+
+    monkeypatch.setattr(sources, "index_has", lambda dist, idx: False)
+    with patch("subprocess.run") as run, pytest.raises(RuntimeError) as exc:
+        sources.install_package("foo-fetcher", requested="foo")
+    run.assert_not_called()
+    assert "não foi encontrado no índice" in str(exc.value)
+    assert "'foo' foi lido como 'foo-fetcher'" in str(exc.value)

@@ -9,7 +9,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ### Alterado
 
-- `quantilica sources install` consulta o índice da Quantilica antes do PyPI (uv: `--default-index` PyPI + `--index` Quantilica + `first-index`), fechando o risco de dependency confusion; o erro de instalação informa quando o nome digitado foi lido como `<nome>-fetcher`.
+- `quantilica sources install` consulta o índice da Quantilica antes do PyPI (uv: `--default-index` PyPI + `--index` Quantilica + `first-index`), e recusa instalar o que esse índice não publica, fechando o risco de dependency confusion; o erro de instalação informa quando o nome digitado foi lido como `<nome>-fetcher`.
 - `quantilica sources install/uninstall` deixou de depender de uma lista de
   fetchers escrita à mão: o nome curto vira `<id>-fetcher` (regra do registro),
   então uma fonte nova é aceita sem editar o código. A tabela `SOURCES_REGISTRY`

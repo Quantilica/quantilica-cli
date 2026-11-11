@@ -189,6 +189,22 @@ def uv_index_args(idx: str) -> list[str]:
     ]
 
 
+def index_has(dist_spec: str, index_url: str) -> bool:
+    """Diz se o índice da Quantilica publica a distribuição (PEP 503).
+
+    Sem resposta ou com erro devolve ``False``: na dúvida, não instala.
+    """
+    name = re.split(r"[\[<>=!~; ]", dist_spec, maxsplit=1)[0]
+    name = re.sub(r"[-_.]+", "-", name).lower()
+    url = f"{index_url.rstrip('/')}/{name}/"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "quantilica-cli"})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return response.status == 200
+    except Exception:
+        return False
+
+
 def install_package(
     dist_name: str, index_url: str | None = None, requested: str | None = None
 ) -> None:
@@ -203,6 +219,15 @@ def install_package(
         RuntimeError: Se a instalação falhar.
     """
     idx = index_url or get_index_url()
+
+    # Só instala o que o índice da Quantilica publica. Sem isso, um nome
+    # digitado errado (ou um fetcher ainda não publicado) cairia no PyPI, onde
+    # qualquer pessoa pode registrar um pacote com esse nome.
+    if not index_has(dist_name, idx):
+        msg = f"{dist_name} não foi encontrado no índice da Quantilica ({idx})"
+        if requested:
+            msg += f". '{requested}' foi lido como '{dist_name}'"
+        raise RuntimeError(msg)
 
     # Prepara o ambiente garantindo que VIRTUAL_ENV aponte para o ambiente atual
     env = os.environ.copy()
