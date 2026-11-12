@@ -93,7 +93,7 @@ def test_metadados_da_fonte_vem_do_registro(
     assert src["homepage_url"] == "https://www.tesourodireto.com.br"
     assert src["dominio_tematico"] == "financas-publicas"
     assert src["cadencia"] == "daily"
-    assert src["sigla"] is None  # o registro não tem sigla
+    assert src["sigla"] is None  # o órgão não traz sigla entre parênteses
 
 
 def test_fonte_desconhecida_fica_fora_do_envio(

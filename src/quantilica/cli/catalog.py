@@ -1,7 +1,8 @@
 """Comandos `quantilica catalog` — sincronização com o Portal (Subplano 3).
 
 Varre o Universal Hive Parquet Lake local (QUANTILICA_LAKE_DIR ou lake_root),
-lê descritores `_dataset.json`, inspeciona schemas Arrow e amostras (até 20 linhas),
+lê descritores `_dataset.json`, inspeciona schemas Arrow e amostras (até 20 linhas,
+com valores pessoais mascarados antes de sair da máquina),
 monta o payload consolidado e dispara para a API do Portal via:
 POST /api/v2/admin/catalog/sync (com autenticação via Bearer token).
 """
@@ -13,6 +14,7 @@ import decimal
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.request
 from collections import Counter
@@ -25,6 +27,8 @@ import typer
 from quantilica.core.registry import FetcherInfo, RegistryError
 from rich.console import Console
 from rich.table import Table
+
+from quantilica.cli._personal import mask_personal
 
 logger = logging.getLogger("quantilica.cli.catalog")
 console = Console()
@@ -172,6 +176,14 @@ class CatalogBuild:
     restricted: Counter[str] = field(default_factory=Counter)
     #: ``source_id`` do lake que o registro não conhece (ficam fora do payload).
     unknown: set[str] = field(default_factory=set)
+    #: Colunas mascaradas na amostra, por id do dataset (só os que tiveram).
+    masked: dict[str, list[str]] = field(default_factory=dict)
+
+
+def _sigla(orgao: str | None) -> str | None:
+    """Sigla do primeiro trecho entre parênteses do órgão (``... (ANAC)``)."""
+    m = re.search(r"\(([^()]+)\)", orgao or "")
+    return m.group(1).strip() or None if m else None
 
 
 def _source_object(
@@ -181,7 +193,7 @@ def _source_object(
     return {
         "id": source_id,
         "nome": info.nome if info else None,
-        "sigla": None,
+        "sigla": _sigla(info.orgao) if info else None,
         "orgao_emissor": info.orgao if info else None,
         "dominio_tematico": info.dominio if info else None,
         "licenca": info.licenca if info else None,
@@ -338,9 +350,12 @@ def _extract_dataset_metadata(
         "em_destaque": False,
     }
 
+    # Dado pessoal não sai da máquina: a máscara roda antes do payload existir.
+    sample_rows, masked_columns = mask_personal(sample_rows)
     sample_obj = {
         "dataset_id": full_id,
         "linhas_amostra": sample_rows,
+        "colunas_mascaradas": masked_columns,
         "schema_arrow_json": schema_arrow_json,
     }
 
@@ -417,6 +432,8 @@ def build_catalog(
         columns_list.extend(meta["columns"])
         if meta["sample"]["linhas_amostra"] or meta["sample"]["schema_arrow_json"]:
             samples_list.append(meta["sample"])
+        if meta["sample"]["colunas_mascaradas"]:
+            build.masked[meta["dataset"]["id"]] = meta["sample"]["colunas_mascaradas"]
 
     for source_id in sorted(build.unknown):
         logger.warning(
@@ -524,10 +541,10 @@ def cmd_catalog_sync(
         int,
         typer.Option(
             "--sample-size",
-            help="Número de linhas de amostra a extrair (máx 20). O padrão é 0: "
-            "as amostras são linhas cruas e podem ter dados pessoais.",
+            help="Número de linhas de amostra a extrair (máx 20; 0 desliga). "
+            "Valores pessoais (CPF, nome, e-mail, telefone) saem mascarados.",
         ),
-    ] = 0,
+    ] = 20,
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -582,6 +599,7 @@ def cmd_catalog_sync(
     table.add_row("Datasets Parquet", str(datasets_count))
     table.add_row("Colunas e Chaves", str(columns_count))
     table.add_row("Amostras de Dados", str(samples_count))
+    table.add_row("Datasets com valores mascarados", str(len(build.masked)))
     table.add_row(
         "Deixados de fora (redistribuição restrita)",
         str(sum(build.restricted.values())),
@@ -600,6 +618,8 @@ def cmd_catalog_sync(
         )
 
     if dry_run:
+        for ds_id, cols in sorted(build.masked.items()):
+            console.print(f"[yellow]Mascarado:[/yellow] {ds_id}: {', '.join(cols)}")
         console.print(
             "[yellow]Modo --dry-run ativo:[/yellow] nenhum dado enviado para o portal."
         )

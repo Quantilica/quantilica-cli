@@ -290,8 +290,8 @@ def _dataset_com_linha(tmp_path: Path) -> None:
     pq.write_table(pa.table({"nome": ["Fulano de Tal"]}), dataset_dir / "part.parquet")
 
 
-def test_catalog_sync_sem_amostras_por_padrao(tmp_path: Path) -> None:
-    """Amostra é linha crua e pode ter dado pessoal: só sai se pedida."""
+def test_catalog_sync_amostra_por_padrao_sai_mascarada(tmp_path: Path) -> None:
+    """Amostra é linha crua: sai por padrão, mas com o dado pessoal mascarado."""
     _dataset_com_linha(tmp_path)
     res = runner.invoke(
         app, ["catalog", "sync", "--lake-dir", str(tmp_path), "--dry-run"]
@@ -299,6 +299,25 @@ def test_catalog_sync_sem_amostras_por_padrao(tmp_path: Path) -> None:
     assert res.exit_code == 0
     assert "cvm/cadastro" in res.output
     assert "Fulano de Tal" not in res.output
+    assert "•••" in res.output
+
+
+def test_catalog_sync_sample_size_zero_desliga_amostras(tmp_path: Path) -> None:
+    _dataset_com_linha(tmp_path)
+    res = runner.invoke(
+        app,
+        [
+            "catalog",
+            "sync",
+            "--lake-dir",
+            str(tmp_path),
+            "--dry-run",
+            "--sample-size",
+            "0",
+        ],
+    )
+    assert res.exit_code == 0
+    assert "•••" not in res.output
 
 
 def test_catalog_sync_sem_pyarrow_recusa(
