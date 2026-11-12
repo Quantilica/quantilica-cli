@@ -7,6 +7,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+## [0.20.0] - 2026-11-12
+
 ### Alterado
 
 - `quantilica catalog sync` resolve o `source_id` do lake pelo registro de fetchers (apelido vira id canônico, e o id do dataset acompanha) e preenche a fonte com `nome`, `orgao`, `licenca`, `homepage`, `dominio` e `cadencia` do `FetcherInfo`; fonte fora do registro fica fora do envio, e com o registro vazio nada é enviado (sem registro não há como saber se a fonte pode ser redistribuída). Deixou de inventar `Geral`/`Open Data`/`mensal`/`nacional`. Cada dataset leva `fetcher_id` e `total_linhas` (soma de `num_rows` dos Parquets). Fonte de redistribuição restrita não entra no payload. Novo `--registry` aponta um `registry.json` no lugar dos fetchers instalados; o resumo do `--dry-run` mostra o que ficou de fora e o que é desconhecido.
