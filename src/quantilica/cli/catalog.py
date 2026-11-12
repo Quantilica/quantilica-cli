@@ -422,7 +422,11 @@ def build_catalog(
         sources_dict.setdefault(src["id"], src)
         datasets_list.append(meta["dataset"])
         columns_list.extend(meta["columns"])
-        if meta["sample"]["linhas_amostra"] or meta["sample"]["schema_arrow_json"]:
+        # Com --sample-size 0 a amostra não vai: enviar linhas vazias apagaria
+        # no portal a amostra de um envio anterior.
+        if sample_size > 0 and (
+            meta["sample"]["linhas_amostra"] or meta["sample"]["schema_arrow_json"]
+        ):
             samples_list.append(meta["sample"])
 
     for source_id in sorted(build.unknown):
@@ -531,7 +535,8 @@ def cmd_catalog_sync(
         int,
         typer.Option(
             "--sample-size",
-            help="Número de linhas de amostra a extrair (máx 20; 0 desliga).",
+            help="Número de linhas de amostra a extrair (máx 20). Com 0 a amostra "
+            "não é enviada e a do portal fica como está.",
         ),
     ] = 20,
     dry_run: Annotated[

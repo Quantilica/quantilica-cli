@@ -16,8 +16,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
   então uma fonte nova é aceita sem editar o código. A tabela `SOURCES_REGISTRY`
   guarda só o que foge da regra (`sql` e apelidos antigos como `bcb`, `rfb`,
   `td`). Os nomes aceitos antes continuam levando à mesma distribuição.
-- `quantilica catalog sync`: as amostras continuam com até 20 linhas por padrão (`--sample-size`; 0 desliga), como estão no lake.
-- `quantilica catalog sync` preenche a `sigla` da fonte com o primeiro trecho entre parênteses do órgão do registro (`... (ANAC)` vira `ANAC`; sem parênteses fica vazia).
+- `quantilica catalog sync`: as amostras continuam com até 20 linhas por padrão (`--sample-size`), como estão no lake; com `--sample-size 0` a amostra não é enviada, e a já gravada no portal fica.
+- `quantilica catalog sync` preenche a `sigla` da fonte com o primeiro trecho entre parênteses do órgão do registro (`... (ANAC)` vira `ANAC`; sem parênteses a sigla não é enviada, e a já gravada no portal fica).
 - `quantilica catalog sync` recusa rodar sem `pyarrow` (antes saía com código 0, sem colunas, sem amostras e com zero linhas); o extra `lake` declara `pyarrow`.
 
 ### Corrigido

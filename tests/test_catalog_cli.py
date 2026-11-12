@@ -332,3 +332,13 @@ def test_catalog_sync_sem_pyarrow_recusa(
     )
     assert res.exit_code == 1
     assert "pyarrow" in res.output
+
+
+def test_catalog_sync_sample_size_zero_nao_envia_amostra(tmp_path: Path) -> None:
+    """Amostra vazia apagaria no portal a de um envio anterior."""
+    from quantilica.cli.catalog import extract_catalog_payload
+
+    _dataset_com_linha(tmp_path)
+    payload = extract_catalog_payload(tmp_path, sample_size=0)
+    assert payload["datasets"]
+    assert payload["samples"] == []
