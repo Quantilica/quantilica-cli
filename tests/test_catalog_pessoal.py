@@ -294,3 +294,10 @@ def test_sigla_do_orgao(orgao: str | None, sigla: str | None) -> None:
 
 def test_sigla_sem_registro_e_none() -> None:
     assert _source_object("x", None, 0)["sigla"] is None
+
+
+@pytest.mark.parametrize(
+    "coluna", ["rg", "nr_rg", "matricula", "endereco", "logradouro", "ds_endereco"]
+)
+def test_documento_e_endereco_mascarados(coluna: str) -> None:
+    assert is_personal_column(coluna)

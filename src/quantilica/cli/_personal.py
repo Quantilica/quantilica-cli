@@ -94,6 +94,8 @@ _PERSON = frozenset(
 
 _NAME_TOKENS = frozenset({"nome", "nomes", "nm", "no"})
 _CONTACT_SUBSTRINGS = ("cpf", "mail", "fone", "celular", "investidor")
+# Documento e endereço: mascarados mesmo quando são de empresa (na dúvida).
+_DIRECT_TOKENS = frozenset({"fax", "rg", "matricula", "endereco", "logradouro"})
 
 
 def normalize(name: str) -> str:
@@ -120,7 +122,7 @@ def is_personal_column(name: str) -> bool:
     if any(s in norm for s in _CONTACT_SUBSTRINGS):  # cpf, e-mail, telefone...
         return True
     tokens = _tokens(norm)
-    if "fax" in tokens:
+    if tokens & _DIRECT_TOKENS:
         return True
     if not (tokens & _NAME_TOKENS) or norm.startswith("nomenclatura"):
         return False
