@@ -22,6 +22,8 @@ TABELA_ANTIGA = {
     "cvm": "cvm-fetcher",
     "datasus": "datasus-fetcher",
     "datasus-sigtap": "sigtap-fetcher",
+    "ibge": "ibge-sidra-fetcher",
+    "ibge-sidra": "ibge-sidra-fetcher",
     "inep": "inep-fetcher",
     "infosiga": "infosiga-fetcher",
     "inmet": "inmet-fetcher",
@@ -33,7 +35,7 @@ TABELA_ANTIGA = {
     "rfb": "rfb-cnpj-fetcher",
     "rfb-cnpj": "rfb-cnpj-fetcher",
     "rtn": "rtn-fetcher",
-    "sidra": "sidra-fetcher",
+    "sidra": "ibge-sidra-fetcher",
     "sigtap": "sigtap-fetcher",
     "sql": "quantilica-sql",
     "td": "tesouro-direto-fetcher",
@@ -70,3 +72,11 @@ def test_fetcher_novo_sem_editar_a_tabela():
 def test_nomes_que_ja_sao_distribuicao_passam_como_vieram():
     assert sources.resolve_dist("quantilica-analytics") == "quantilica-analytics"
     assert sources.resolve_dist("anp-fetcher") == "anp-fetcher"
+
+
+def test_sidra_e_ibge_levam_ao_fetcher_renomeado():
+    assert sources.resolve_dist("ibge-sidra") == "ibge-sidra-fetcher"
+    assert sources.resolve_dist("sidra") == "ibge-sidra-fetcher"
+    assert sources.resolve_dist("ibge") == "ibge-sidra-fetcher"
+    # O nome antigo da distribuição passa como veio (wheels congeladas).
+    assert sources.resolve_dist("sidra-fetcher") == "sidra-fetcher"
