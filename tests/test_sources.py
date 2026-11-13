@@ -337,3 +337,214 @@ def test_install_distingue_indice_fora_do_ar():
         sources.install_package("anp-fetcher")
     run.assert_not_called()
     assert "não respondeu" in str(exc.value)
+
+
+# --- Laço de instalação e distribuições renomeadas -------------------------
+
+
+class _AmbienteFalso:
+    """Ambiente simulado: dist instalada -> entry point e nomes declarados."""
+
+    def __init__(self, dists: dict[str, tuple[set[str], set[str]]] | None = None):
+        # dist -> (nomes de entry point, ids/apelidos declarados via FetcherInfo)
+        self.dists: dict[str, tuple[set[str], set[str]]] = dict(dists or {})
+        self.installs: list[str] = []
+        self.uninstalls: list[str] = []
+
+    def entry_points(self) -> set[str]:
+        return {ep for eps, _ in self.dists.values() for ep in eps}
+
+    def declared(self) -> dict[str, str]:
+        return {n: d for d, (_, names) in self.dists.items() for n in names}
+
+    def install(self, spec: str) -> None:
+        dist = spec.split("[")[0]
+        self.installs.append(dist)
+        self.dists[dist] = NOVAS[dist]
+
+    def uninstall(self, dist: str) -> None:
+        self.uninstalls.append(dist)
+        self.dists.pop(dist, None)
+
+
+# O que cada distribuição passa a oferecer depois de instalada.
+NOVAS: dict[str, tuple[set[str], set[str]]] = {
+    "ibge-sidra-fetcher": ({"ibge-sidra"}, {"ibge-sidra", "sidra", "ibge"}),
+    "bcb-sgs-fetcher": ({"bcb-sgs"}, {"bcb-sgs", "bcb"}),
+    "rfb-cnpj-fetcher": ({"rfb-cnpj"}, {"rfb-cnpj", "rfb"}),
+    "tddata-fetcher": ({"tddata"}, set()),  # sem FetcherInfo declarado
+}
+
+
+@pytest.fixture
+def ambiente(monkeypatch: pytest.MonkeyPatch, temp_config_dir: Path):
+    """Troca a descoberta e a instalação por um ambiente simulado."""
+    from quantilica.cli import sources
+
+    amb = _AmbienteFalso()
+    monkeypatch.setattr(sources, "get_installed_entry_points", amb.entry_points)
+    monkeypatch.setattr(sources, "installed_declared_names", amb.declared)
+    monkeypatch.setattr(sources, "is_dist_installed", lambda d: d in amb.dists)
+    monkeypatch.setattr(sources, "install_package", amb.install)
+    monkeypatch.setattr(sources, "uninstall_package", amb.uninstall)
+    monkeypatch.setattr(sources, "fetch_remote_sources", lambda: {})
+    monkeypatch.setattr(sources.os, "access", lambda *a, **k: True)  # ambiente gravável
+    return amb
+
+
+def _instalar_com_reexec(source: str, limite: int = 5) -> int:
+    """Roda ``install`` e re-executa a CLI como o processo real faria.
+
+    Devolve quantas execuções houve; estoura se passar do ``limite`` (laço).
+    """
+    from quantilica.cli import sources
+    from quantilica.cli.cli import app
+
+    chamadas: list[list[str]] = []
+
+    def reexec(args: list[str]) -> None:
+        chamadas.append(args)
+        assert len(chamadas) <= limite, "laço de reinstalação sem fim"
+        CliRunner().invoke(app, args)
+
+    with patch.object(sources, "reexec_cli", reexec):
+        result = CliRunner().invoke(app, ["install", source])
+    assert result.exit_code == 0, result.output
+    return 1 + len(chamadas)
+
+
+@pytest.mark.parametrize(
+    ("source", "dist"),
+    [
+        ("sidra", "ibge-sidra-fetcher"),
+        ("ibge", "ibge-sidra-fetcher"),
+        ("ibge-sidra", "ibge-sidra-fetcher"),
+        ("bcb", "bcb-sgs-fetcher"),
+        ("rfb", "rfb-cnpj-fetcher"),
+        ("tddata", "tddata-fetcher"),
+    ],
+)
+def test_install_com_apelido_termina_sem_laco(ambiente, source: str, dist: str):
+    """O apelido não é o entry point (que tem o id): a 2ª passada não reinstala."""
+    execucoes = _instalar_com_reexec(source)
+
+    assert ambiente.installs == [dist]
+    assert execucoes == 2  # instala + uma passada que vê "já instalada"
+    assert load_state()["installed"][source] == dist
+
+
+def test_install_dist_instalada_sem_apelido_declarado_termina(ambiente):
+    """Fetcher sem FetcherInfo e com id diferente do nome: a dist instalada basta."""
+    ambiente.dists["bcb-sgs-fetcher"] = ({"bcb-sgs"}, set())
+    result = CliRunner().invoke(_app(), ["install", "bcb", "--no-exec"])
+    assert result.exit_code == 0
+    assert "já está instalada" in result.output
+    assert ambiente.installs == []
+
+
+def _app():
+    from quantilica.cli.cli import app
+
+    return app
+
+
+def test_distribuicoes_renomeadas_declaradas_num_so_lugar():
+    from quantilica.cli.sources import DISTRIBUICOES_RENOMEADAS
+
+    assert DISTRIBUICOES_RENOMEADAS == {"sidra-fetcher": "ibge-sidra-fetcher"}
+
+
+def test_install_migra_sidra_fetcher_antigo(ambiente):
+    """sidra-fetcher 0.11.0 (entry point `sidra`, sem info) cede lugar à nova."""
+    ambiente.dists["sidra-fetcher"] = ({"sidra"}, set())
+    save_state({"installed": {"sidra": "sidra-fetcher"}})
+
+    execucoes = _instalar_com_reexec("sidra")
+
+    assert ambiente.installs == ["ibge-sidra-fetcher"]
+    assert ambiente.uninstalls == ["sidra-fetcher"]
+    assert "sidra-fetcher" not in ambiente.dists
+    assert "ibge-sidra-fetcher" in ambiente.dists
+    assert load_state()["installed"] == {"sidra": "ibge-sidra-fetcher"}
+    assert execucoes == 2
+
+
+def test_install_antiga_instalada_nao_diz_ja_instalada(ambiente):
+    ambiente.dists["sidra-fetcher"] = ({"sidra"}, set())
+    result = CliRunner().invoke(_app(), ["install", "sidra", "--no-exec"])
+    assert result.exit_code == 0
+    assert "já está instalada" not in result.output
+    assert ambiente.installs == ["ibge-sidra-fetcher"]
+
+
+def test_install_falha_na_nova_mantem_a_antiga(ambiente, monkeypatch):
+    from quantilica.cli import sources
+
+    ambiente.dists["sidra-fetcher"] = ({"sidra"}, set())
+
+    def falha(spec: str) -> None:
+        raise RuntimeError("índice fora do ar")
+
+    monkeypatch.setattr(sources, "install_package", falha)
+    result = CliRunner().invoke(_app(), ["install", "sidra", "--no-exec"])
+    assert result.exit_code == 1
+    assert "sidra-fetcher" in ambiente.dists
+    assert ambiente.uninstalls == []
+
+
+def test_uninstall_remove_a_antiga_se_for_ela_a_instalada(ambiente):
+    ambiente.dists["sidra-fetcher"] = ({"sidra"}, set())
+    save_state({"installed": {"sidra": "sidra-fetcher"}})
+
+    result = CliRunner().invoke(_app(), ["uninstall", "sidra"])
+
+    assert result.exit_code == 0
+    assert ambiente.uninstalls == ["sidra-fetcher"]
+    assert load_state()["installed"] == {}
+
+
+def test_uninstall_remove_a_nova_quando_e_ela_a_instalada(ambiente):
+    ambiente.dists["ibge-sidra-fetcher"] = NOVAS["ibge-sidra-fetcher"]
+    save_state({"installed": {"ibge": "ibge-sidra-fetcher"}})
+
+    result = CliRunner().invoke(_app(), ["uninstall", "ibge"])
+
+    assert result.exit_code == 0
+    assert ambiente.uninstalls == ["ibge-sidra-fetcher"]
+    assert load_state()["installed"] == {}
+
+
+def test_doctor_traduz_estado_antigo_em_vez_de_reinstalar_a_antiga(ambiente):
+    """`sidra = "sidra-fetcher"` no estado e nada instalado: vai a nova."""
+    save_state({"installed": {"sidra": "sidra-fetcher"}})
+
+    result = CliRunner().invoke(_app(), ["doctor"])
+
+    assert result.exit_code == 0
+    assert ambiente.installs == ["ibge-sidra-fetcher"]
+    assert "sidra-fetcher" not in ambiente.dists
+    assert load_state()["installed"] == {"sidra": "ibge-sidra-fetcher"}
+
+
+def test_doctor_migra_a_antiga_ainda_instalada(ambiente):
+    ambiente.dists["sidra-fetcher"] = ({"sidra"}, set())
+    save_state({"installed": {"sidra": "sidra-fetcher"}})
+
+    result = CliRunner().invoke(_app(), ["doctor"])
+
+    assert result.exit_code == 0
+    assert ambiente.installs == ["ibge-sidra-fetcher"]
+    assert ambiente.uninstalls == ["sidra-fetcher"]
+    assert load_state()["installed"] == {"sidra": "ibge-sidra-fetcher"}
+
+
+def test_doctor_apelido_instalado_nao_reinstala(ambiente):
+    """`sidra` no estado e o fetcher novo instalado (entry point `ibge-sidra`)."""
+    ambiente.dists["ibge-sidra-fetcher"] = NOVAS["ibge-sidra-fetcher"]
+    save_state({"installed": {"sidra": "ibge-sidra-fetcher"}})
+
+    result = CliRunner().invoke(_app(), ["doctor"])
+
+    assert result.exit_code == 0
+    assert ambiente.installs == []
+    assert "instaladas e ativas" in result.output

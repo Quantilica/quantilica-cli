@@ -11,6 +11,11 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 - O fetcher do SIDRA passa a se chamar `ibge-sidra-fetcher` (id `ibge-sidra`): `quantilica sources install sidra` e `ibge` resolvem para a distribuição nova (apelidos na tabela manual, para valer mesmo sem o fetcher instalado); `ibge-sidra` segue a regra `<id>-fetcher`. O nome antigo `sidra-fetcher` continua aceito como distribuição, apontando para as wheels congeladas do índice.
 
+### Corrigido
+
+- `quantilica sources install` não re-executa mais em laço sem fim para fonte pedida por apelido: a fonte vale como instalada se o nome responde por entry point, por id/apelido declarado no `FetcherInfo` ou se a distribuição está instalada. Valia para `sidra`, `ibge`, `bcb` e `rfb`, cujo entry point tem o id (`ibge-sidra`, `bcb-sgs`, `rfb-cnpj`). `doctor` usa a mesma regra e deixou de reinstalar fonte presente só por apelido.
+- Migração de distribuição renomeada (`DISTRIBUICOES_RENOMEADAS`, `sidra-fetcher` -> `ibge-sidra-fetcher`): `install sidra` com o `sidra-fetcher` antigo instalado instala o novo, remove o antigo e grava o novo no `state.toml`; `doctor` traduz entradas antigas do estado em vez de reinstalar o antigo; `uninstall` remove o antigo se for ele o instalado.
+
 ## [0.20.0] - 2026-11-12
 
 ### Alterado

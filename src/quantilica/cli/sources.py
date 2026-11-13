@@ -10,7 +10,7 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
-from importlib.metadata import entry_points
+from importlib.metadata import PackageNotFoundError, distribution, entry_points
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -49,6 +49,14 @@ SOURCES_REGISTRY: dict[str, str] = {
 }
 
 FETCHER_SUFFIX = "-fetcher"
+
+# Único lugar onde se declara que uma distribuição mudou de nome: antiga ->
+# nova. Quem tem a antiga instalada (ou registrada no ``state.toml``) migra para
+# a nova em ``install``, ``doctor`` e ``uninstall``, sem lista paralela em outro
+# ponto. A antiga segue nas wheels congeladas do índice, só para reprodução.
+DISTRIBUICOES_RENOMEADAS: dict[str, str] = {
+    "sidra-fetcher": "ibge-sidra-fetcher",
+}
 
 
 def resolve_dist(source: str, registry: dict[str, str] | None = None) -> str:
@@ -135,6 +143,40 @@ def get_installed_entry_points() -> set[str]:
     """
     eps = entry_points(group=FETCHER_GROUP)
     return {ep.name for ep in eps}
+
+
+def is_dist_installed(dist_name: str) -> bool:
+    """Diz se a distribuição ``dist_name`` está instalada no ambiente atual."""
+    try:
+        distribution(dist_name)
+    except PackageNotFoundError:
+        return False
+    return True
+
+
+def installed_source_names() -> set[str]:
+    """Nomes sob os quais as fontes instaladas respondem.
+
+    União dos nomes de entry point com os ids e apelidos que os pacotes
+    declaram (``FetcherInfo``). Só o entry point não basta: ``sidra``, ``ibge``,
+    ``bcb`` e ``rfb`` são apelidos, e o entry point tem o id (``ibge-sidra``).
+    """
+    return get_installed_entry_points() | set(installed_declared_names())
+
+
+def renamed_old_dists(dist_name: str) -> list[str]:
+    """Distribuições antigas, hoje renomeadas para ``dist_name``, que estão instaladas."""
+    return [
+        old
+        for old, new in DISTRIBUICOES_RENOMEADAS.items()
+        if new == dist_name and is_dist_installed(old)
+    ]
+
+
+def _remove_old_dists(old_dists: list[str]) -> None:
+    """Desinstala as distribuições antigas, já substituídas pela nova."""
+    for old in old_dists:
+        uninstall_package(old)
 
 
 def get_lake_entry_points() -> list[tuple[str, str | None]]:
@@ -419,6 +461,17 @@ def _dist_spec(dist_name: str, extras: list[str]) -> str:
     return f"{dist_name}[{','.join(unique)}]" if unique else dist_name
 
 
+def _translate_state(registered: dict[str, str]) -> bool:
+    """Troca, no estado, distribuições renomeadas pela nova. Devolve se mudou algo."""
+    changed = False
+    for name, dist in registered.items():
+        new = DISTRIBUICOES_RENOMEADAS.get(dist)
+        if new:
+            registered[name] = new
+            changed = True
+    return changed
+
+
 @app.command("install")
 def cmd_install(
     source: str = typer.Argument(
@@ -445,8 +498,11 @@ def cmd_install(
     dist_name = resolve_dist(source, registry)
     spec = _dist_spec(dist_name, extra or [])
 
-    installed_eps = get_installed_entry_points()
-    if source in installed_eps and spec == dist_name:
+    # Distribuição antiga renomeada (ex.: sidra-fetcher): precisa migrar, mesmo
+    # que o nome pedido já responda pelo entry point dela.
+    old_dists = renamed_old_dists(dist_name)
+    installed = source in installed_source_names() or is_dist_installed(dist_name)
+    if installed and spec == dist_name and not old_dists:
         console.print(f"[yellow]A fonte '{source}' já está instalada.[/yellow]")
         return
 
@@ -470,10 +526,26 @@ def cmd_install(
             )
         raise typer.Exit(1) from exc
 
+    # A nova entra antes de a antiga sair: se a instalação falha, não se perde a fonte.
+    if old_dists:
+        try:
+            _remove_old_dists(old_dists)
+        except Exception as exc:
+            console.print(
+                f"[red]Erro ao remover a distribuição antiga:[/red] {exc}\n"
+                f"[yellow]Remova com: uv pip uninstall {' '.join(old_dists)}[/yellow]"
+            )
+            raise typer.Exit(1) from exc
+        console.print(
+            f"[cyan]Distribuição renomeada: {', '.join(old_dists)} -> "
+            f"{dist_name}.[/cyan]"
+        )
+
     # Gravar no arquivo de estado (sem extras: o estado registra só a distribuição)
     state = load_state()
-    installed = state.setdefault("installed", {})
-    installed[source] = dist_name
+    registered = state.setdefault("installed", {})
+    _translate_state(registered)
+    registered[source] = dist_name
     save_state(state)
 
     escaped = spec.replace("[", r"\[")
@@ -498,16 +570,24 @@ def cmd_uninstall(
     registry = _merged_registry()
     dist_name = resolve_dist(source, registry)
 
+    # Se a instalada é a distribuição antiga (renomeada), é ela que sai.
+    old_dists = renamed_old_dists(dist_name)
+    targets = [dist_name] if is_dist_installed(dist_name) or not old_dists else []
+    targets += old_dists
+
     try:
-        uninstall_package(dist_name)
+        for target in targets:
+            uninstall_package(target)
     except Exception as exc:
         console.print(f"[red]Erro na desinstalação:[/red] {exc}")
         raise typer.Exit(1) from exc
 
     state = load_state()
-    installed = state.get("installed", {})
-    if source in installed:
-        del installed[source]
+    registered = state.get("installed", {})
+    gone = [n for n, d in registered.items() if n == source or d in targets]
+    for name in gone:
+        del registered[name]
+    if gone:
         save_state(state)
 
     console.print(f"[green]✓ Fonte '{source}' desinstalada com sucesso.[/green]")
@@ -521,11 +601,15 @@ def cmd_doctor() -> None:
     """
     state = load_state()
     registered = state.get("installed", {})
-    installed_eps = get_installed_entry_points()
+    # Entradas com o nome antigo da distribuição passam para a nova.
+    if _translate_state(registered):
+        save_state(state)
+    installed_eps = installed_source_names()
 
     missing: dict[str, str] = {}
     for name, dist in registered.items():
-        if name not in installed_eps:
+        # Ainda com a distribuição antiga instalada: falta migrar.
+        if name not in installed_eps or renamed_old_dists(dist):
             missing[name] = dist
 
     if not missing:
@@ -539,10 +623,16 @@ def cmd_doctor() -> None:
         for name, dist in missing.items():
             console.print(f" - {name} ({dist})")
 
+        recovered: set[str] = set()  # ids e apelidos da mesma distribuição
         for name, dist in missing.items():
+            if dist in recovered:
+                continue
             console.print(f"[cyan]Reinstalando {name} ({dist})...[/cyan]")
             try:
+                old_dists = renamed_old_dists(dist)
                 install_package(dist)
+                _remove_old_dists(old_dists)
+                recovered.add(dist)
                 console.print(f"[green]✓ {name} recuperado.[/green]")
             except Exception as exc:
                 console.print(f"[red]Falha ao recuperar {name}:[/red] {exc}")
