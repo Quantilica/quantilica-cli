@@ -7,6 +7,12 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+## [0.21.4] - 2026-11-14
+
+### Alterado
+
+- Lotes do `quantilica catalog sync` de até 90 MB (antes 4 MB): o portal 1.1.2 aceita 100 MiB na rota de sync. O lake atual volta a ir num envio só.
+
 ## [0.21.3] - 2026-11-13
 
 ### Corrigido
