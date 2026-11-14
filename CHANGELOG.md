@@ -7,6 +7,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+## [0.21.0] - 2026-11-13
+
 ### Alterado
 
 - O fetcher do SIDRA passa a se chamar `ibge-sidra-fetcher` (id `ibge-sidra`): `quantilica sources install sidra` e `ibge` resolvem para a distribuição nova (apelidos na tabela manual, para valer mesmo sem o fetcher instalado); `ibge-sidra` segue a regra `<id>-fetcher`. O nome antigo `sidra-fetcher` continua aceito como distribuição, apontando para as wheels congeladas do índice.
