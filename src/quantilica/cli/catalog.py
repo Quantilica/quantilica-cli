@@ -534,11 +534,11 @@ def send_catalog_payload(
         raise RuntimeError(f"Erro de conexão com o portal em {url}: {exc}") from exc
 
 
-# O portal recusa corpos acima de 5 MiB em /admin/catalog/sync (413). O lake
-# inteiro passa disso (8,5 MB em 13/11/2026), então o envio vai em lotes, cada
-# fonte inteira num lote só. O sync do portal é upsert: lotes não apagam nada
-# do que veio nos anteriores.
-LOTE_MAX_BYTES = 4_000_000
+# O portal aceita até 100 MiB em /admin/catalog/sync (desde a 1.1.2; antes, 5 MiB)
+# e o Cloudflare corta em 100 MB. Lotes de até 90 MB: o lake inteiro (8,5 MB em
+# 13/11/2026) vai num lote só, e a divisão por fonte fica para quando crescer. O
+# sync do portal é upsert: lotes não apagam nada do que veio nos anteriores.
+LOTE_MAX_BYTES = 90_000_000
 
 
 def _tamanho_json(obj: Any) -> int:
