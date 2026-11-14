@@ -7,6 +7,12 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+## [0.21.1] - 2026-11-13
+
+### Corrigido
+
+- `quantilica catalog sync` envia `User-Agent: quantilica-cli/<versão>`: o Cloudflare do portal barrava o padrão do `urllib` (`Python-urllib`) com 403 (erro 1010).
+
 ## [0.21.0] - 2026-11-13
 
 ### Alterado
