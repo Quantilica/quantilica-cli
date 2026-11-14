@@ -53,8 +53,12 @@ def test_nomes_antigos_resolvem_para_a_mesma_distribuicao(nome, dist):
 
 
 def test_tabela_manual_so_tem_o_que_a_regra_nao_cobre():
-    for nome, dist in sources.SOURCES_REGISTRY.items():
+    for nome, dist in sources._RESERVA_OFFLINE.items():
         assert dist != f"{nome}-fetcher", f"{nome!r} segue a regra; tire da tabela"
+
+
+def test_reserva_offline_mantem_o_nome_antigo_como_alias():
+    assert sources.SOURCES_REGISTRY is sources._RESERVA_OFFLINE
 
 
 def test_fetchers_instalados_seguem_a_regra():

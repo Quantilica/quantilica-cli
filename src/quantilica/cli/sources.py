@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from importlib.metadata import PackageNotFoundError, distribution, entry_points
@@ -29,10 +30,13 @@ LAKE_GROUP = "quantilica.lake"
 DEFAULT_INDEX_URL = "https://index.quantilica.com/simple/"
 PYPI_INDEX_URL = "https://pypi.org/simple"
 
-# Tabela manual: só o que a regra ``<nome>-fetcher`` não resolve. Os fetchers
-# em si NÃO são listados aqui: os instalados vêm dos entry points
-# (``FetcherInfo``) e os ausentes saem da regra em ``resolve_dist``.
-SOURCES_REGISTRY: dict[str, str] = {
+# Reserva offline: a tabela manual congelada. Só vale quando o fetcher não está
+# instalado e o registro público (``registro_publico``) não responde nem tem
+# cache. NÃO recebe entradas novas: id, apelidos e renomes de fetcher novo vivem
+# no registro público (``quantilica-index/registro.toml``) e nos ``FetcherInfo``
+# dos pacotes. Os fetchers em si não são listados aqui: os instalados vêm dos
+# entry points e os ausentes saem da regra em ``resolve_dist``.
+_RESERVA_OFFLINE: dict[str, str] = {
     # Pacote que não é fetcher (a distribuição não termina em ``-fetcher``).
     "sql": "quantilica-sql",
     # Apelidos de nomes antigos que levam a outro id; ficam para o caso de o
@@ -47,28 +51,181 @@ SOURCES_REGISTRY: dict[str, str] = {
     "tesouro_direto": "tesouro-direto-fetcher",
     "transparencia_sp": "transparencia-sp-fetcher",
 }
+#: Nome antigo da reserva, mantido como alias.
+SOURCES_REGISTRY = _RESERVA_OFFLINE
 
 FETCHER_SUFFIX = "-fetcher"
 
-# Único lugar onde se declara que uma distribuição mudou de nome: antiga ->
-# nova. Quem tem a antiga instalada (ou registrada no ``state.toml``) migra para
-# a nova em ``install``, ``doctor`` e ``uninstall``, sem lista paralela em outro
-# ponto. A antiga segue nas wheels congeladas do índice, só para reprodução.
+# Reserva offline dos renomes de distribuição: antiga -> nova. A fonte é o
+# ``historico`` do registro público (``distribuicoes_renomeadas``); esta
+# constante só cobre o que já existia quando o registro passou a mandar. Quem
+# tem a antiga instalada (ou registrada no ``state.toml``) migra para a nova em
+# ``install``, ``doctor`` e ``uninstall``. A antiga segue nas wheels congeladas
+# do índice, só para reprodução.
 DISTRIBUICOES_RENOMEADAS: dict[str, str] = {
     "sidra-fetcher": "ibge-sidra-fetcher",
 }
+
+#: Validade do cache local do registro público.
+REGISTRY_CACHE_TTL = 24 * 3600
+
+# Marca que a rede já falhou neste processo: evita repetir a espera a cada
+# resolução (``--refresh`` ignora a marca).
+_REDE_FALHOU = False
+
+
+def registry_cache_path() -> Path:
+    """Cache local do registro público: ``~/.cache/quantilica/registry.json``."""
+    return Path.home() / ".cache" / "quantilica" / "registry.json"
+
+
+def registry_url() -> str:
+    """URL do ``registry.json`` público, ao lado do ``simple/`` do índice."""
+    base = get_index_url().rstrip("/")
+    if base.endswith("/simple"):
+        base = base[:-7]
+    return f"{base.rstrip('/')}/registry.json"
+
+
+def _registro_valido(doc: object) -> dict[str, Any] | None:
+    """O documento, se tem a forma de um registro e o ``sha256`` (quando há) bate."""
+    if not isinstance(doc, dict):
+        return None
+    fetchers = doc.get("fetchers")
+    if not isinstance(fetchers, list) or not all(
+        isinstance(f, dict) and isinstance(f.get("id"), str) for f in fetchers
+    ):
+        return None
+    digest = doc.get("sha256")
+    if digest is not None:
+        from quantilica.core.registry import registry_sha256
+
+        try:
+            if registry_sha256(doc) != digest:
+                return None
+        except (KeyError, TypeError):
+            return None
+    return doc
+
+
+def _le_cache() -> dict[str, Any] | None:
+    try:
+        return _registro_valido(
+            json.loads(registry_cache_path().read_text(encoding="utf-8"))
+        )
+    except (OSError, ValueError):
+        return None
+
+
+def _baixa_registro() -> dict[str, Any] | None:
+    """Baixa o registro público; ``None`` quando o índice não responde ou o
+    documento é inválido."""
+    try:
+        req = urllib.request.Request(
+            registry_url(), headers={"User-Agent": "quantilica-cli"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as response:
+            if response.status == 200:
+                return _registro_valido(json.loads(response.read().decode("utf-8")))
+    except Exception:
+        pass
+    return None
+
+
+def registro_publico(refresh: bool = False) -> dict[str, Any] | None:
+    """O ``registry.json`` público, com cache local de 24 h.
+
+    Cache fresco (menos de 24 h) é usado sem rede. Vencido, ou com ``refresh``,
+    baixa de novo; sem resposta do índice, vale o cache vencido. ``None`` quando
+    não há rede nem cache (a reserva offline cobre).
+    """
+    global _REDE_FALHOU
+    path = registry_cache_path()
+    if not refresh:
+        try:
+            fresco = time.time() - path.stat().st_mtime < REGISTRY_CACHE_TTL
+        except OSError:
+            fresco = False
+        cached = _le_cache()
+        if cached is not None and (fresco or _REDE_FALHOU):
+            return cached
+        if _REDE_FALHOU:
+            return None
+    doc = _baixa_registro()
+    if doc is None:
+        _REDE_FALHOU = True
+        return _le_cache()
+    _REDE_FALHOU = False
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass  # sem cache: o documento baixado vale para esta execução
+    return doc
+
+
+def nomes_do_registro(doc: dict[str, Any]) -> dict[str, str]:
+    """Mapa ``id/apelido/id antigo -> distribuição`` de um registro.
+
+    Registro v1 não traz ``distribution``: vale a regra ``<id>-fetcher``.
+    """
+    out: dict[str, str] = {}
+    for f in doc.get("fetchers", []):
+        dist = f.get("distribution") or f"{f['id']}{FETCHER_SUFFIX}"
+        for name in (f["id"], *(f.get("aliases") or ())):
+            out[name] = dist
+        for r in f.get("historico") or ():
+            if isinstance(r, dict) and isinstance(r.get("id"), str):
+                out.setdefault(r["id"], dist)
+    return out
+
+
+def renomeadas_do_registro(doc: dict[str, Any]) -> dict[str, str]:
+    """Mapa ``distribuição antiga -> nova`` a partir do ``historico``."""
+    out: dict[str, str] = {}
+    for f in doc.get("fetchers", []):
+        dist = f.get("distribution") or f"{f['id']}{FETCHER_SUFFIX}"
+        for r in f.get("historico") or ():
+            old = r.get("distribution") if isinstance(r, dict) else None
+            if isinstance(old, str) and old != dist:
+                out[old] = dist
+    return out
+
+
+def distribuicoes_renomeadas() -> dict[str, str]:
+    """Renomes de distribuição: o ``historico`` do registro público sobre a reserva."""
+    out = dict(DISTRIBUICOES_RENOMEADAS)
+    doc = registro_publico()
+    if doc is not None:
+        out.update(renomeadas_do_registro(doc))
+    return out
 
 
 def resolve_dist(source: str, registry: dict[str, str] | None = None) -> str:
     """Resolve o nome curto de uma fonte para a distribuição pip.
 
-    Ordem: tabela (``registry`` ou ``SOURCES_REGISTRY``), nome que já é uma
-    distribuição (termina em ``-fetcher`` ou começa com ``quantilica-``, passa
-    como veio) e, por fim, a regra do registro: ``<nome>-fetcher``.
+    Com ``registry`` (tabela já montada, p.ex. por ``_merged_registry``), ele
+    vale primeiro. Sem ele, a ordem é: fetcher instalado (id e apelidos do
+    ``FetcherInfo``), registro público, reserva offline (``_RESERVA_OFFLINE``).
+    Em seguida, nome que já é uma distribuição (termina em ``-fetcher`` ou começa
+    com ``quantilica-``) passa como veio e, por fim, a regra ``<nome>-fetcher``.
     """
-    table = SOURCES_REGISTRY if registry is None else registry
-    if source in table:
-        return table[source]
+    if registry is not None:
+        if source in registry:
+            return registry[source]
+    else:
+        instalado = installed_declared_names()
+        if source in instalado:
+            return instalado[source]
+        publico = registro_publico()
+        if publico is not None:
+            nomes = nomes_do_registro(publico)
+            if source in nomes:
+                return nomes[source]
+        if source in _RESERVA_OFFLINE:
+            return _RESERVA_OFFLINE[source]
     if source.endswith(FETCHER_SUFFIX) or source.startswith("quantilica-"):
         return source
     return f"{source}{FETCHER_SUFFIX}"
@@ -168,7 +325,7 @@ def renamed_old_dists(dist_name: str) -> list[str]:
     """Distribuições antigas, hoje renomeadas para ``dist_name``, que estão instaladas."""
     return [
         old
-        for old, new in DISTRIBUICOES_RENOMEADAS.items()
+        for old, new in distribuicoes_renomeadas().items()
         if new == dist_name and is_dist_installed(old)
     ]
 
@@ -390,8 +547,13 @@ def fetch_remote_sources() -> dict[str, str]:
 
 
 def local_sources() -> dict[str, str]:
-    """Fontes conhecidas sem o índice: tabela manual e fetchers instalados."""
-    return {**SOURCES_REGISTRY, **installed_declared_names()}
+    """Fontes conhecidas sem o índice: registro público em cache, reserva e instalados."""
+    publico = registro_publico()
+    return {
+        **_RESERVA_OFFLINE,
+        **(nomes_do_registro(publico) if publico is not None else {}),
+        **installed_declared_names(),
+    }
 
 
 def reexec_cli(args: list[str]) -> None:
@@ -421,15 +583,19 @@ def installed_declared_names() -> dict[str, str]:
         return {}
 
 
-def _merged_registry() -> dict[str, str]:
-    """Combina o registro remoto, a tabela manual e o ``FetcherInfo`` instalado.
+def _merged_registry(refresh: bool = False) -> dict[str, str]:
+    """Combina reserva offline, ``sources.json``, registro público e instalados.
 
-    A tabela manual (``SOURCES_REGISTRY``) cobre o que a regra
-    ``<nome>-fetcher`` não alcança (``resolve_dist``); para o que está instalado, id e apelidos do ``FetcherInfo`` mandam.
+    Da menor para a maior precedência: a reserva (``_RESERVA_OFFLINE``, que cobre
+    o que a regra ``<nome>-fetcher`` não alcança), o ``sources.json`` do índice,
+    o registro público (``registro_publico``; ``refresh`` força baixar de novo)
+    e, para o que está instalado, id e apelidos do ``FetcherInfo``.
     """
+    publico = registro_publico(refresh=refresh)
     return {
+        **_RESERVA_OFFLINE,
         **fetch_remote_sources(),
-        **SOURCES_REGISTRY,
+        **(nomes_do_registro(publico) if publico is not None else {}),
         **installed_declared_names(),
     }
 
@@ -464,8 +630,9 @@ def _dist_spec(dist_name: str, extras: list[str]) -> str:
 def _translate_state(registered: dict[str, str]) -> bool:
     """Troca, no estado, distribuições renomeadas pela nova. Devolve se mudou algo."""
     changed = False
+    renomeadas = distribuicoes_renomeadas()
     for name, dist in registered.items():
-        new = DISTRIBUICOES_RENOMEADAS.get(dist)
+        new = renomeadas.get(dist)
         if new:
             registered[name] = new
             changed = True
@@ -492,9 +659,16 @@ def cmd_install(
             ),
         ),
     ] = None,
+    refresh: Annotated[
+        bool,
+        typer.Option(
+            "--refresh",
+            help="Baixa de novo o registro público, ignorando o cache de 24 h.",
+        ),
+    ] = False,
 ) -> None:
     """Instala uma fonte de dados (fetcher) sob demanda."""
-    registry = _merged_registry()
+    registry = _merged_registry(refresh)
     dist_name = resolve_dist(source, registry)
     spec = _dist_spec(dist_name, extra or [])
 
@@ -565,9 +739,16 @@ def cmd_uninstall(
     source: str = typer.Argument(
         ..., help="Nome da fonte/fetcher a desinstalar (ex: comex)"
     ),
+    refresh: Annotated[
+        bool,
+        typer.Option(
+            "--refresh",
+            help="Baixa de novo o registro público, ignorando o cache de 24 h.",
+        ),
+    ] = False,
 ) -> None:
     """Desinstala uma fonte de dados (fetcher)."""
-    registry = _merged_registry()
+    registry = _merged_registry(refresh)
     dist_name = resolve_dist(source, registry)
 
     # Se a instalada é a distribuição antiga (renomeada), é ela que sai.
@@ -594,11 +775,21 @@ def cmd_uninstall(
 
 
 @app.command("doctor")
-def cmd_doctor() -> None:
+def cmd_doctor(
+    refresh: Annotated[
+        bool,
+        typer.Option(
+            "--refresh",
+            help="Baixa de novo o registro público, ignorando o cache de 24 h.",
+        ),
+    ] = False,
+) -> None:
     """Verifica inconsistências entre o estado registrado e os plugins instalados.
 
     Também informa, por fonte, se há conversor do lake (``quantilica.lake``).
     """
+    if refresh:
+        registro_publico(refresh=True)
     state = load_state()
     registered = state.get("installed", {})
     # Entradas com o nome antigo da distribuição passam para a nova.

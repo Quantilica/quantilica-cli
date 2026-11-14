@@ -27,3 +27,22 @@ def _indice_publica_tudo(monkeypatch, request):
     from quantilica.cli import sources
 
     monkeypatch.setattr(sources, "index_has", lambda dist, idx: True)
+
+
+@pytest.fixture(autouse=True)
+def _registro_publico_isolado(monkeypatch, tmp_path, request):
+    """Os testes não tocam a rede nem o cache real do registro público.
+
+    O cache vai para ``tmp_path`` e o download falha por padrão (a reserva
+    offline vale). Os testes do registro público marcam ``registro_real`` e
+    controlam o download por conta própria.
+    """
+    from quantilica.cli import sources
+
+    monkeypatch.setattr(
+        sources, "registry_cache_path", lambda: tmp_path / "cache" / "registry.json"
+    )
+    monkeypatch.setattr(sources, "_REDE_FALHOU", False)
+    if "registro_real" in request.keywords:
+        return
+    monkeypatch.setattr(sources, "_baixa_registro", lambda: None)

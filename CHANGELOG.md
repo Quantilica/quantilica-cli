@@ -7,6 +7,40 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+Requer `quantilica-core` com o registro v2 (ainda não publicado; subir o piso de
+`quantilica-core>=` para a versão que o trouxer na release).
+
+### Adicionado
+
+- `quantilica registry export` exporta o registro v2: `module` (do entry point),
+  `repo` (de `[project.urls] Repository`/`Source`; ausente, assume
+  `https://github.com/Quantilica/<distribuição>` e avisa no stderr), `version`
+  e `lake_entry_point`, mais o `sha256` do conteúdo. Os campos da v1 seguem com
+  o mesmo nome e formato.
+- `registry export --ecossistema registro.toml` junta a camada dos fatos do
+  ecossistema (`docs_pasta`, `vitrine`, `ci_integracao`, `json_leve`, `mascote`,
+  `health_url`, `historico`), validada por
+  `quantilica.core.registry.carrega_registro_ecossistema`.
+- `registry export --strict` também falha com distribuição fora da regra
+  `<id>-fetcher` que o `historico` não explica e, com `--ecossistema`, com
+  fetcher sem seção no arquivo.
+- `registro_publico()`: baixa `index.quantilica.com/registry.json`, confere o
+  `sha256` e guarda em `~/.cache/quantilica/registry.json` (validade de 24 h;
+  vencido e sem rede, vale o cache). `--refresh` em `install`, `uninstall` e
+  `doctor` ignora o cache.
+
+### Alterado
+
+- `resolve_dist` consulta, nesta ordem, o fetcher instalado, o registro público
+  (id, apelidos e ids do `historico`) e a reserva offline. `SOURCES_REGISTRY`
+  virou `_RESERVA_OFFLINE` (o nome antigo segue como alias), congelada: não
+  recebe entradas novas.
+- `DISTRIBUICOES_RENOMEADAS` passa a ser a reserva; os renomes vêm do
+  `historico` do registro público (`distribuicoes_renomeadas()`).
+- `quantilica health` sonda os `health_url` do registro público (nome da sonda =
+  id do fetcher); `HEALTH_SOURCES` é a reserva, usada sem registro ou quando ele
+  não declara nenhuma sonda.
+
 ## [0.21.4] - 2026-11-14
 
 ### Alterado

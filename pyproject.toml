@@ -60,7 +60,10 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["-p", "no:cacheprovider"]
-markers = ["indice_real: o teste usa a consulta real de publicação no índice"]
+markers = [
+  "indice_real: o teste usa a consulta real de publicação no índice",
+  "registro_real: o teste exercita registro_publico (download e cache) em vez de isolá-lo",
+]
 
 [tool.ruff]
 line-length = 88

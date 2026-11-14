@@ -22,7 +22,10 @@ console = Console()
 DEFAULT_TIMEOUT = 5.0
 USER_AGENT = "quantilica-cli (health)"
 
-# Lista canônica de fontes sondadas (nome, URL de sonda leve).
+# Reserva offline das fontes sondadas (nome, URL de sonda leve). A lista vem do
+# ``health_url`` de cada fetcher no registro público (``health_sources``); esta
+# só vale sem registro (sem rede e sem cache) ou enquanto ele não declara
+# nenhuma sonda. Não recebe entradas novas.
 HEALTH_SOURCES: list[tuple[str, str]] = [
     ("bcb", "https://api.bcb.gov.br/dados/serie/bcdata.sgs.1/dados?formato=json"),
     ("sidra", "https://servicodados.ibge.gov.br/api/v3/calendario"),
@@ -33,6 +36,25 @@ HEALTH_SOURCES: list[tuple[str, str]] = [
     ("comex", "https://balanca.economia.gov.br"),
     ("inmet", "https://apitempo.inmet.gov.br/estacoes"),
 ]
+
+
+def health_sources() -> list[tuple[str, str]]:
+    """Fontes sondadas: ``health_url`` do registro público, senão a reserva.
+
+    No registro público o nome da sonda é o id do fetcher (``ibge-sidra``).
+    """
+    from quantilica.cli.sources import registro_publico
+
+    doc = registro_publico()
+    if doc is not None:
+        derivadas = sorted(
+            (f["id"], f["health_url"])
+            for f in doc.get("fetchers", [])
+            if isinstance(f.get("health_url"), str) and f["health_url"]
+        )
+        if derivadas:
+            return derivadas
+    return list(HEALTH_SOURCES)
 
 
 def _make_client(timeout: float) -> httpx2.Client:
@@ -108,10 +130,11 @@ def _run_probes(timeout: float, fail_fast: bool) -> list[dict[str, object]]:
     Returns:
         A lista de resultados por fonte.
     """
+    sources = health_sources()
     with _make_client(timeout=timeout) as client:
         if fail_fast:
             results = []
-            for name, url in HEALTH_SOURCES:
+            for name, url in sources:
                 result = _probe(client, name, url)
                 results.append(result)
                 if result["status"] != "ok":
@@ -119,11 +142,10 @@ def _run_probes(timeout: float, fail_fast: bool) -> list[dict[str, object]]:
             return results
 
         with concurrent.futures.ThreadPoolExecutor(
-            max_workers=len(HEALTH_SOURCES)
+            max_workers=max(len(sources), 1)
         ) as pool:
             futures = [
-                (name, pool.submit(_probe, client, name, url))
-                for name, url in HEALTH_SOURCES
+                (name, pool.submit(_probe, client, name, url)) for name, url in sources
             ]
             return [future.result() for _, future in futures]
 
