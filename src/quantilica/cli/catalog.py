@@ -27,6 +27,8 @@ from quantilica.core.registry import FetcherInfo, RegistryError
 from rich.console import Console
 from rich.table import Table
 
+from quantilica.cli import __version__
+
 logger = logging.getLogger("quantilica.cli.catalog")
 console = Console()
 err_console = Console(stderr=True)
@@ -468,9 +470,12 @@ def send_catalog_payload(
     """Envia o payload via HTTP POST para o endpoint de sincronização do Portal."""
     url = f"{portal_url.rstrip('/')}/api/v2/admin/catalog/sync"
     body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+    # User-Agent próprio: o Cloudflare do portal barra o padrão "Python-urllib/x"
+    # (erro 1010, assinatura do navegador).
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
+        "User-Agent": f"quantilica-cli/{__version__}",
     }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key.strip()}"

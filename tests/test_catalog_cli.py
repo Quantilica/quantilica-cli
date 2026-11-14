@@ -342,3 +342,31 @@ def test_catalog_sync_sample_size_zero_nao_envia_amostra(tmp_path: Path) -> None
     payload = extract_catalog_payload(tmp_path, sample_size=0)
     assert payload["datasets"]
     assert payload["samples"] == []
+
+
+def test_envio_do_catalogo_usa_user_agent_proprio(monkeypatch):
+    """O Cloudflare do portal barra o User-Agent padrão do urllib (erro 1010)."""
+    import json as _json
+
+    from quantilica.cli import catalog as catalog_mod
+
+    capturado = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return _json.dumps({"ok": True}).encode()
+
+    def _urlopen(req, timeout=None):
+        capturado["ua"] = req.get_header("User-agent")
+        return _Resp()
+
+    monkeypatch.setattr(catalog_mod.urllib.request, "urlopen", _urlopen)
+    catalog_mod.send_catalog_payload("https://portal.exemplo", {"sources": []}, "k")
+    assert capturado["ua"].startswith("quantilica-cli/")
+    assert "urllib" not in capturado["ua"].lower()
