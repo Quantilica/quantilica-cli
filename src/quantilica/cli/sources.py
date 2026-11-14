@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -73,6 +74,11 @@ REGISTRY_CACHE_TTL = 24 * 3600
 # resolução (``--refresh`` ignora a marca).
 _REDE_FALHOU = False
 
+#: Cache negativo: depois de uma falha de rede, as próximas execuções não tentam
+#: o índice por este tempo (um arquivo marcador ao lado do cache), para não
+#: pagar a espera do timeout a cada processo.
+REGISTRY_FALHA_TTL = 10 * 60
+
 
 def registry_cache_path() -> Path:
     """Cache local do registro público: ``~/.cache/quantilica/registry.json``."""
@@ -87,9 +93,13 @@ def registry_url() -> str:
     return f"{base.rstrip('/')}/registry.json"
 
 
+#: Versões do registro que este cli sabe ler; outra conta como "sem registro".
+REGISTRY_VERSOES = (1, 2)
+
+
 def _registro_valido(doc: object) -> dict[str, Any] | None:
-    """O documento, se tem a forma de um registro e o ``sha256`` (quando há) bate."""
-    if not isinstance(doc, dict):
+    """O documento, se tem versão conhecida, forma de registro e ``sha256`` que bate."""
+    if not isinstance(doc, dict) or doc.get("version") not in REGISTRY_VERSOES:
         return None
     fetchers = doc.get("fetchers")
     if not isinstance(fetchers, list) or not all(
@@ -132,37 +142,83 @@ def _baixa_registro() -> dict[str, Any] | None:
     return None
 
 
+def _marcador_de_falha() -> Path:
+    return registry_cache_path().with_name("registry.fail")
+
+
+def _em_quarentena() -> bool:
+    """A rede falhou neste processo ou há menos de 10 min, em outro."""
+    if _REDE_FALHOU:
+        return True
+    try:
+        return time.time() - _marcador_de_falha().stat().st_mtime < REGISTRY_FALHA_TTL
+    except OSError:
+        return False
+
+
+def _marca_falha() -> None:
+    marcador = _marcador_de_falha()
+    try:
+        marcador.parent.mkdir(parents=True, exist_ok=True)
+        marcador.touch()
+    except OSError:
+        pass  # sem marcador: só a memória do processo evita a nova tentativa
+
+
+def _grava_cache(doc: dict[str, Any]) -> None:
+    """Grava o cache de forma atômica: arquivo temporário único e ``os.replace``."""
+    path = registry_cache_path()
+    tmp_name = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            dir=path.parent, prefix="registry.", suffix=".tmp"
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, ensure_ascii=False)
+        os.replace(tmp_name, path)
+        tmp_name = None
+    except OSError:
+        pass  # sem cache: o documento baixado vale para esta execução
+    finally:
+        if tmp_name is not None:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+
+
 def registro_publico(refresh: bool = False) -> dict[str, Any] | None:
     """O ``registry.json`` público, com cache local de 24 h.
 
     Cache fresco (menos de 24 h) é usado sem rede. Vencido, ou com ``refresh``,
-    baixa de novo; sem resposta do índice, vale o cache vencido. ``None`` quando
-    não há rede nem cache (a reserva offline cobre).
+    baixa de novo; sem resposta do índice, vale o cache vencido, e a falha fica
+    marcada por 10 min (cache negativo) para que as próximas execuções não
+    esperem o timeout. ``refresh`` ignora cache e marcador. ``None`` quando não
+    há rede nem cache (a reserva offline cobre).
     """
     global _REDE_FALHOU
-    path = registry_cache_path()
     if not refresh:
         try:
-            fresco = time.time() - path.stat().st_mtime < REGISTRY_CACHE_TTL
+            idade = time.time() - registry_cache_path().stat().st_mtime
         except OSError:
-            fresco = False
+            idade = None
         cached = _le_cache()
-        if cached is not None and (fresco or _REDE_FALHOU):
+        if cached is not None and idade is not None and idade < REGISTRY_CACHE_TTL:
             return cached
-        if _REDE_FALHOU:
-            return None
+        if _em_quarentena():
+            return cached
     doc = _baixa_registro()
     if doc is None:
         _REDE_FALHOU = True
+        _marca_falha()
         return _le_cache()
     _REDE_FALHOU = False
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, path)
+        _marcador_de_falha().unlink()
     except OSError:
-        pass  # sem cache: o documento baixado vale para esta execução
+        pass
+    _grava_cache(doc)
     return doc
 
 
@@ -203,14 +259,21 @@ def distribuicoes_renomeadas() -> dict[str, str]:
     return out
 
 
+def _aviso(texto: str) -> None:
+    Console(stderr=True).print(
+        f"[yellow]Aviso:[/yellow] {escape(texto)}", highlight=False
+    )
+
+
 def resolve_dist(source: str, registry: dict[str, str] | None = None) -> str:
     """Resolve o nome curto de uma fonte para a distribuição pip.
 
     Com ``registry`` (tabela já montada, p.ex. por ``_merged_registry``), ele
     vale primeiro. Sem ele, a ordem é: fetcher instalado (id e apelidos do
     ``FetcherInfo``), registro público, reserva offline (``_RESERVA_OFFLINE``).
-    Em seguida, nome que já é uma distribuição (termina em ``-fetcher`` ou começa
-    com ``quantilica-``) passa como veio e, por fim, a regra ``<nome>-fetcher``.
+    Em seguida, nome que é uma distribuição antiga renomeada resolve para a nova, com aviso;
+    nome que já é uma distribuição (termina em ``-fetcher`` ou começa com
+    ``quantilica-``) passa como veio e, por fim, vale a regra ``<nome>-fetcher``.
     """
     if registry is not None:
         if source in registry:
@@ -226,6 +289,12 @@ def resolve_dist(source: str, registry: dict[str, str] | None = None) -> str:
                 return nomes[source]
         if source in _RESERVA_OFFLINE:
             return _RESERVA_OFFLINE[source]
+    nova = distribuicoes_renomeadas().get(source)
+    if nova is not None:
+        _aviso(
+            f"a distribuição '{source}' foi renomeada para '{nova}'; usando '{nova}'."
+        )
+        return nova
     if source.endswith(FETCHER_SUFFIX) or source.startswith("quantilica-"):
         return source
     return f"{source}{FETCHER_SUFFIX}"

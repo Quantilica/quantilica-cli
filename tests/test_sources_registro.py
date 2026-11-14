@@ -82,5 +82,10 @@ def test_sidra_e_ibge_levam_ao_fetcher_renomeado():
     assert sources.resolve_dist("ibge-sidra") == "ibge-sidra-fetcher"
     assert sources.resolve_dist("sidra") == "ibge-sidra-fetcher"
     assert sources.resolve_dist("ibge") == "ibge-sidra-fetcher"
-    # O nome antigo da distribuição passa como veio (wheels congeladas).
-    assert sources.resolve_dist("sidra-fetcher") == "sidra-fetcher"
+    # O nome antigo da distribuição resolve para a nova (como install e doctor).
+    assert sources.resolve_dist("sidra-fetcher") == "ibge-sidra-fetcher"
+
+
+def test_nome_antigo_da_distribuicao_avisa_no_stderr(capsys):
+    assert sources.resolve_dist("sidra-fetcher") == "ibge-sidra-fetcher"
+    assert "renomeada para 'ibge-sidra-fetcher'" in capsys.readouterr().err

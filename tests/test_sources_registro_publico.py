@@ -86,8 +86,8 @@ def test_registro_publico_traz_id_apelido_e_id_antigo(instalados, rede):
     assert sources.resolve_dist("antigo") == "novo-fetcher"  # id do historico
     assert sources.resolve_dist("pec") == "outro-pkg"  # fora da regra
     assert sources.resolve_dist("peculiar") == "outro-pkg"
-    # o nome antigo da distribuição passa como veio (wheels congeladas)
-    assert sources.resolve_dist("antigo-fetcher") == "antigo-fetcher"
+    # o nome antigo da distribuição resolve para a nova (histórico), com aviso
+    assert sources.resolve_dist("antigo-fetcher") == "novo-fetcher"
 
 
 def test_sem_registro_a_reserva_offline_resolve(instalados, rede):
@@ -192,6 +192,85 @@ def test_registro_v1_sem_sha256_e_aceito():
     assert sources._registro_valido(doc) == doc
     assert sources._registro_valido({"fetchers": "x"}) is None
     assert sources._registro_valido([]) is None
+
+
+@pytest.mark.parametrize("versao", [0, 3, None, "2"])
+def test_registro_de_versao_desconhecida_conta_como_sem_registro(versao):
+    doc = {"version": versao, "fetchers": [{"id": "anp"}]}
+    assert sources._registro_valido(doc) is None
+    assert sources._registro_valido({"fetchers": []}) is None  # sem version
+
+
+@pytest.mark.registro_real
+def test_versao_desconhecida_cai_no_cache_e_depois_na_reserva(
+    instalados, rede, monkeypatch
+):
+    # como o download real, valida o documento antes de devolvê-lo
+    monkeypatch.setattr(
+        sources, "_baixa_registro", lambda: sources._registro_valido(rede["doc"])
+    )
+    rede["doc"] = _doc(NOVO)
+    sources.registro_publico()  # cache válido
+    rede["doc"] = {"version": 3, "fetchers": [{"id": "x"}]}
+    assert sources.registro_publico(refresh=True)["fetchers"][0]["id"] == "novo"
+    cache = sources.registry_cache_path()
+    cache.write_text(json.dumps(rede["doc"]))  # cache de versão desconhecida
+    assert sources.registro_publico(refresh=True) is None
+    assert sources.resolve_dist("sidra") == "ibge-sidra-fetcher"  # reserva
+
+
+@pytest.mark.registro_real
+def test_cache_negativo_vale_entre_processos(rede):
+    assert sources.registro_publico() is None
+    assert sources._marcador_de_falha().exists() and rede["chamadas"] == 1
+    sources._REDE_FALHOU = False  # outro processo: só o marcador resta
+    assert sources.registro_publico() is None
+    assert rede["chamadas"] == 1  # não esperou o índice de novo
+    # vencido o marcador, tenta de novo
+    marcador = sources._marcador_de_falha()
+    velho = time.time() - sources.REGISTRY_FALHA_TTL - 5
+    os.utime(marcador, (velho, velho))
+    sources._REDE_FALHOU = False
+    rede["doc"] = _doc(NOVO)
+    assert sources.registro_publico() is not None
+    assert rede["chamadas"] == 2 and not marcador.exists()  # sucesso limpa
+
+
+@pytest.mark.registro_real
+def test_refresh_ignora_o_cache_negativo(rede):
+    assert sources.registro_publico() is None
+    rede["doc"] = _doc(NOVO)
+    assert sources.registro_publico(refresh=True) is not None
+
+
+@pytest.mark.registro_real
+def test_cache_negativo_ainda_serve_o_cache_vencido(rede):
+    rede["doc"] = _doc(NOVO)
+    sources.registro_publico()
+    cache = sources.registry_cache_path()
+    velho = time.time() - sources.REGISTRY_CACHE_TTL - 60
+    os.utime(cache, (velho, velho))
+    rede["doc"] = None
+    assert sources.registro_publico()["fetchers"][0]["id"] == "novo"
+    sources._REDE_FALHOU = False
+    chamadas = rede["chamadas"]
+    assert sources.registro_publico()["fetchers"][0]["id"] == "novo"
+    assert rede["chamadas"] == chamadas  # marcador evitou a nova tentativa
+
+
+@pytest.mark.registro_real
+def test_escrita_do_cache_e_atomica_e_sem_sobras(rede):
+    rede["doc"] = _doc(NOVO)
+    sources.registro_publico()
+    pasta = sources.registry_cache_path().parent
+    assert sorted(p.name for p in pasta.iterdir()) == ["registry.json"]
+    rede["doc"] = _doc(FORA_DA_REGRA)
+    sources.registro_publico(refresh=True)
+    assert sorted(p.name for p in pasta.iterdir()) == ["registry.json"]
+    assert (
+        json.loads((pasta / "registry.json").read_text())["fetchers"][0]["id"]
+        == "peculiar"
+    )
 
 
 def test_download_com_sha256_errado_e_recusado(monkeypatch):

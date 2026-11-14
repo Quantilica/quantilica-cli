@@ -24,7 +24,13 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - `registro_publico()`: baixa `index.quantilica.com/registry.json`, confere o
   `sha256` e guarda em `~/.cache/quantilica/registry.json` (validade de 24 h;
   vencido e sem rede, vale o cache). `--refresh` em `install`, `uninstall` e
-  `doctor` ignora o cache.
+  `doctor` ignora o cache. A escrita é atômica (arquivo temporário único e
+  `os.replace`). Depois de uma falha de rede, um marcador `registry.fail` ao
+  lado do cache evita nova tentativa por 10 min, para que cada processo (em
+  especial o `quantilica health`) não espere o timeout de 5 s; `--refresh`
+  ignora o marcador.
+- O registro público só é aceito com `version` 1 ou 2; qualquer outra conta como
+  "sem registro" (vale o cache e, depois, a reserva offline).
 
 ### Alterado
 
@@ -34,6 +40,10 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
   (id, apelidos e ids do `historico`) e a reserva offline. `SOURCES_REGISTRY`
   virou `_RESERVA_OFFLINE` (o nome antigo segue como alias), congelada: não
   recebe entradas novas.
+- `resolve_dist` de um nome antigo de distribuição renomeada (`sidra-fetcher`)
+  agora resolve para a nova (`ibge-sidra-fetcher`), com aviso no stderr. Antes
+  passava como veio, e `install` e `doctor` discordavam (ambos migram para a
+  nova). As wheels congeladas continuam no índice para reprodução.
 - `DISTRIBUICOES_RENOMEADAS` passa a ser a reserva; os renomes vêm do
   `historico` do registro público (`distribuicoes_renomeadas()`).
 - `quantilica health` sonda os `health_url` do registro público (nome da sonda =
