@@ -7,6 +7,12 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+## [0.21.2] - 2026-11-13
+
+### Corrigido
+
+- `quantilica catalog sync` envia o payload em lotes por fonte (até 4 MB cada, a fonte nunca é partida): o portal recusa corpos acima de 5 MiB (413) e o lake inteiro passa de 8 MB. O sync do portal é upsert, então os lotes não apagam o que veio antes; as respostas são somadas.
+
 ## [0.21.1] - 2026-11-13
 
 ### Corrigido
