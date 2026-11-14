@@ -493,6 +493,105 @@ def send_catalog_payload(
         raise RuntimeError(f"Erro de conexão com o portal em {url}: {exc}") from exc
 
 
+# O portal recusa corpos acima de 5 MiB em /admin/catalog/sync (413). O lake
+# inteiro passa disso (8,5 MB em 13/11/2026), então o envio vai em lotes, cada
+# fonte inteira num lote só. O sync do portal é upsert: lotes não apagam nada
+# do que veio nos anteriores.
+LOTE_MAX_BYTES = 4_000_000
+
+
+def _tamanho_json(obj: Any) -> int:
+    return len(json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8"))
+
+
+def split_catalog_payload(
+    payload: dict[str, Any], max_bytes: int = LOTE_MAX_BYTES
+) -> list[dict[str, Any]]:
+    """Divide o payload em lotes por fonte, cada um com até ``max_bytes``.
+
+    Uma fonte nunca é partida (a fonte, os datasets dela e as colunas e amostras
+    desses datasets vão juntos); uma fonte sozinha acima do limite vira um lote
+    próprio, e o portal decide. Itens sem ``dataset_id`` conhecido vão no primeiro
+    lote. Payload que já cabe volta como está, num lote só.
+    """
+    if _tamanho_json(payload) <= max_bytes:
+        return [payload]
+
+    listas = [k for k, v in payload.items() if isinstance(v, list)]
+    filhos = [k for k in listas if k not in ("sources", "datasets")]
+    fonte_do_dataset = {
+        d.get("id"): d.get("source_id") for d in payload.get("datasets", [])
+    }
+
+    grupos: dict[Any, dict[str, list]] = {}
+    ordem: list[Any] = []
+
+    def grupo(fonte: Any) -> dict[str, list]:
+        if fonte not in grupos:
+            grupos[fonte] = {k: [] for k in listas}
+            ordem.append(fonte)
+        return grupos[fonte]
+
+    for src in payload.get("sources", []):
+        grupo(src.get("id"))["sources"].append(src)
+    for ds in payload.get("datasets", []):
+        grupo(ds.get("source_id"))["datasets"].append(ds)
+    soltos: dict[str, list] = {k: [] for k in listas}
+    for k in filhos:
+        for item in payload[k]:
+            fonte = fonte_do_dataset.get(item.get("dataset_id"), _SEM_FONTE)
+            if fonte is _SEM_FONTE:
+                soltos[k].append(item)
+            else:
+                grupo(fonte)[k].append(item)
+
+    extras = {k: v for k, v in payload.items() if k not in listas}
+    lotes: list[dict[str, Any]] = []
+    atual: dict[str, Any] | None = None
+    for fonte in ordem:
+        parte = grupos[fonte]
+        if atual is not None:
+            candidato = {k: atual[k] + parte[k] for k in listas}
+            if _tamanho_json({**extras, **candidato}) <= max_bytes:
+                atual.update(candidato)
+                continue
+            lotes.append(atual)
+        atual = {**extras, **{k: list(parte[k]) for k in listas}}
+    if atual is not None:
+        lotes.append(atual)
+    if not lotes:
+        lotes.append({**extras, **{k: [] for k in listas}})
+    for k in listas:
+        lotes[0][k] = lotes[0][k] + soltos[k]
+    return lotes
+
+
+_SEM_FONTE = object()
+
+
+def _somar_respostas(respostas: list[dict[str, Any]]) -> dict[str, Any]:
+    """Soma os contadores numéricos das respostas dos lotes."""
+    if len(respostas) == 1:
+        return respostas[0]
+    total: dict[str, Any] = {"lotes": len(respostas)}
+    for res in respostas:
+        for chave, valor in res.items():
+            if isinstance(valor, bool):
+                total[chave] = valor
+            elif isinstance(valor, (int, float)):
+                total[chave] = total.get(chave, 0) + valor
+            elif isinstance(valor, dict):
+                sub = total.setdefault(chave, {})
+                for k, v in valor.items():
+                    if isinstance(v, (int, float)) and not isinstance(v, bool):
+                        sub[k] = sub.get(k, 0) + v
+                    else:
+                        sub[k] = v
+            else:
+                total[chave] = valor
+    return total
+
+
 @app.command("sync")
 def cmd_catalog_sync(
     lake_dir: Annotated[
@@ -635,8 +734,17 @@ def cmd_catalog_sync(
         f"[cyan]Enviando payload ({sources_count} fontes, "
         f"{datasets_count} datasets)...[/cyan]"
     )
+    lotes = split_catalog_payload(payload)
+    respostas: list[dict[str, Any]] = []
     try:
-        res = send_catalog_payload(portal_url, payload, api_key=api_key)
+        for i, lote in enumerate(lotes, 1):
+            if len(lotes) > 1:
+                console.print(
+                    f"[cyan]Lote {i}/{len(lotes)}:[/cyan] "
+                    + ", ".join(sorted(str(x.get("id")) for x in lote["sources"]))
+                )
+            respostas.append(send_catalog_payload(portal_url, lote, api_key=api_key))
+        res = _somar_respostas(respostas)
         console.print(
             f"[green]✓ Catálogo sincronizado com sucesso![/green] Resposta: {res}"
         )
