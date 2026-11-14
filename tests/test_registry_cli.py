@@ -86,7 +86,8 @@ def test_export_json(fake_eps):
     res = runner.invoke(app, ["export", "--json"])
     assert res.exit_code == 0
     data = json.loads(res.stdout)
-    assert data["version"] == 1
+    assert data["version"] == 2
+    assert len(data["sha256"]) == 64
     assert [f["id"] for f in data["fetchers"]] == ["anp", "morto", "tesouro-direto"]
     anp, morto, td = data["fetchers"]
     assert td["info_declared"] is True and td["aliases"] == ["td"]
@@ -158,11 +159,11 @@ def test_apelidos_do_info_instalado_nao_contradizem_a_tabela():
     """Falha se um fetcher instalado apelida algo que a tabela manual aponta para outro pacote."""
     names = reg.declared_source_names()
     conflicts = {
-        n: (dist, sources.SOURCES_REGISTRY[n])
+        n: (dist, sources._RESERVA_OFFLINE[n])
         for n, dist in names.items()
-        if n in sources.SOURCES_REGISTRY and sources.SOURCES_REGISTRY[n] != dist
+        if n in sources._RESERVA_OFFLINE and sources._RESERVA_OFFLINE[n] != dist
     }
-    assert not conflicts, f"FetcherInfo contradiz SOURCES_REGISTRY: {conflicts}"
+    assert not conflicts, f"FetcherInfo contradiz _RESERVA_OFFLINE: {conflicts}"
 
 
 def test_export_inclui_redistribuicao_e_strict_nao_exige(fake_eps):
