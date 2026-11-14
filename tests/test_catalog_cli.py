@@ -370,3 +370,64 @@ def test_envio_do_catalogo_usa_user_agent_proprio(monkeypatch):
     catalog_mod.send_catalog_payload("https://portal.exemplo", {"sources": []}, "k")
     assert capturado["ua"].startswith("quantilica-cli/")
     assert "urllib" not in capturado["ua"].lower()
+
+
+def _payload_grande():
+    fontes = ["a", "b", "c"]
+    payload = {"sources": [], "datasets": [], "columns": [], "samples": []}
+    for f in fontes:
+        payload["sources"].append({"id": f})
+        for n in range(3):
+            did = f"{f}/d{n}"
+            payload["datasets"].append({"id": did, "source_id": f})
+            payload["columns"].append({"dataset_id": did, "nome": "x" * 1000})
+            payload["samples"].append(
+                {"dataset_id": did, "linhas_amostra": ["y" * 1000]}
+            )
+    return payload
+
+
+def test_split_payload_pequeno_volta_inteiro():
+    from quantilica.cli.catalog import split_catalog_payload
+
+    payload = {"sources": [{"id": "a"}], "datasets": [], "columns": [], "samples": []}
+    assert split_catalog_payload(payload) == [payload]
+
+
+def test_split_payload_por_fonte_sem_perder_nem_partir_fonte():
+    import json as _json
+
+    from quantilica.cli.catalog import split_catalog_payload
+
+    payload = _payload_grande()
+    lotes = split_catalog_payload(payload, max_bytes=8000)
+    assert len(lotes) > 1
+    for chave in payload:
+        assert sorted(map(_json.dumps, payload[chave])) == sorted(
+            _json.dumps(x) for lote in lotes for x in lote[chave]
+        )
+    for lote in lotes:
+        fontes = {s["id"] for s in lote["sources"]}
+        assert {d["source_id"] for d in lote["datasets"]} <= fontes
+        ids = {d["id"] for d in lote["datasets"]}
+        assert {c["dataset_id"] for c in lote["columns"]} <= ids
+        assert {c["dataset_id"] for c in lote["samples"]} <= ids
+
+
+def test_sync_envia_em_lotes_e_soma_as_respostas(monkeypatch):
+    from quantilica.cli import catalog as catalog_mod
+
+    payload = _payload_grande()
+    lotes = catalog_mod.split_catalog_payload(payload, max_bytes=8000)
+    enviados = []
+
+    def _send(url, lote, api_key=None):
+        enviados.append(lote)
+        return {"status": "success", "counts": {"datasets": len(lote["datasets"])}}
+
+    monkeypatch.setattr(catalog_mod, "send_catalog_payload", _send)
+    monkeypatch.setattr(catalog_mod, "LOTE_MAX_BYTES", 8000)
+    respostas = [_send("u", lote) for lote in lotes]
+    total = catalog_mod._somar_respostas(respostas)
+    assert total["counts"]["datasets"] == 9
+    assert total["lotes"] == len(lotes)
