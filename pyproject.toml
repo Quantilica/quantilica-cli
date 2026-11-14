@@ -20,7 +20,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    "quantilica-core>=0.20.0",
+    "quantilica-core>=0.21.0",
     "rich>=13.0.0",
     "typer>=0.15.0",
 ]
@@ -29,7 +29,7 @@ dependencies = [
 # Motor de `quantilica lake build` e `quantilica lake audit`.
 lake = ["quantilica-analytics>=0.11.0", "pyarrow>=15.0.0"]
 # `quantilica docs`: verificação da documentação dos dados dos fetchers.
-docs = ["quantilica-core[docs]>=0.18.0"]
+docs = ["quantilica-core[docs]>=0.21.0"]
 
 [project.scripts]
 quantilica = "quantilica.cli.cli:main"

@@ -7,9 +7,6 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
-Requer `quantilica-core` com o registro v2 (ainda não publicado; subir o piso de
-`quantilica-core>=` para a versão que o trouxer na release).
-
 ### Adicionado
 
 - `quantilica registry export` exporta o registro v2: `module` (do entry point),
@@ -31,6 +28,8 @@ Requer `quantilica-core` com o registro v2 (ainda não publicado; subir o piso d
 
 ### Alterado
 
+- Piso de dependência `quantilica-core>=0.21.0` (e no extra `docs`): o cli importa
+  `IdentidadePacote` e o registro v2 do core 0.21.0.
 - `resolve_dist` consulta, nesta ordem, o fetcher instalado, o registro público
   (id, apelidos e ids do `historico`) e a reserva offline. `SOURCES_REGISTRY`
   virou `_RESERVA_OFFLINE` (o nome antigo segue como alias), congelada: não
