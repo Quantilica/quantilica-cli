@@ -1,6 +1,6 @@
 [project]
 name = "quantilica-cli"
-version = "0.21.2"
+version = "0.21.3"
 description = "Unified CLI for Quantilica open data fetchers"
 readme = "README.md"
 authors = [{ name = "Komesu, D.K.", email = "daniel@dkko.me" }]

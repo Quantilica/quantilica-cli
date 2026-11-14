@@ -7,6 +7,12 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+## [0.21.3] - 2026-11-13
+
+### Corrigido
+
+- `quantilica catalog sync` deixa fora do catálogo, com aviso, a coluna cujo nome o portal recusa (vazio, acima de 128 caracteres ou com caractere de controle) e tira o NUL dos valores da amostra (o jsonb não o aceita). No lake de 13/11/2026 eram 23 colunas de 20 datasets da ANP, ANAC e INEP, convertidas com delimitador ou codificação errados.
+
 ## [0.21.2] - 2026-11-13
 
 ### Corrigido
