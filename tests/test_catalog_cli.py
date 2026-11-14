@@ -431,3 +431,71 @@ def test_sync_envia_em_lotes_e_soma_as_respostas(monkeypatch):
     total = catalog_mod._somar_respostas(respostas)
     assert total["counts"]["datasets"] == 9
     assert total["lotes"] == len(lotes)
+
+
+def test_coluna_sem_nome_fica_fora_do_catalogo(tmp_path: Path) -> None:
+    """Parquet com coluna de nome vazio (CSV com ';' sobrando) não quebra o sync."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from quantilica.cli.catalog import extract_catalog_payload
+
+    dataset_dir = tmp_path / "anp" / "multas"
+    dataset_dir.mkdir(parents=True)
+    (dataset_dir / "_dataset.json").write_text(
+        json.dumps({"source_id": "anp", "dataset_id": "multas"}), encoding="utf-8"
+    )
+    tbl = pa.table({"auto": ["123"], "": [None]})
+    pq.write_table(tbl, dataset_dir / "part.parquet")
+
+    payload = extract_catalog_payload(tmp_path, sample_size=5)
+    nomes = [c["nome"] for c in payload["columns"]]
+    assert nomes == ["auto"]
+    amostra = payload["samples"][0]
+    assert all(k for linha in amostra["linhas_amostra"] for k in linha)
+    assert "" not in amostra["schema_arrow_json"]
+
+
+def test_coluna_com_nome_longo_fica_fora_do_catalogo(tmp_path: Path) -> None:
+    """Cabeçalho inteiro virando nome de coluna (delimitador errado) não quebra o sync."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from quantilica.cli.catalog import NOME_COLUNA_MAX, extract_catalog_payload
+
+    dataset_dir = tmp_path / "anp" / "producao-mar"
+    dataset_dir.mkdir(parents=True)
+    (dataset_dir / "_dataset.json").write_text(
+        json.dumps({"source_id": "anp", "dataset_id": "producao-mar"}), encoding="utf-8"
+    )
+    longo = ",".join(f"campo_{i}" for i in range(40))
+    assert len(longo) > NOME_COLUNA_MAX
+    pq.write_table(
+        pa.table({"ano": ["2026"], longo: ["a,b"]}), dataset_dir / "p.parquet"
+    )
+
+    payload = extract_catalog_payload(tmp_path, sample_size=5)
+    assert [c["nome"] for c in payload["columns"]] == ["ano"]
+    assert len(payload["datasets"]) == 1
+
+
+def test_nul_em_nome_e_amostra_nao_chega_ao_portal(tmp_path: Path) -> None:
+    """UTF-16 lido como latin-1 deixa NUL nos nomes e valores; o Postgres recusa."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from quantilica.cli.catalog import extract_catalog_payload
+
+    dataset_dir = tmp_path / "anp" / "comercializacao-gn"
+    dataset_dir.mkdir(parents=True)
+    (dataset_dir / "_dataset.json").write_text(
+        json.dumps({"source_id": "anp", "dataset_id": "comercializacao-gn"}),
+        encoding="utf-8",
+    )
+    tbl = pa.table({"\x00A\x00n\x00o\x00": ["1"], "uf": ["S\x00P"]})
+    pq.write_table(tbl, dataset_dir / "p.parquet")
+
+    payload = extract_catalog_payload(tmp_path, sample_size=5)
+    assert [c["nome"] for c in payload["columns"]] == ["uf"]
+    assert "\x00" not in json.dumps(payload["samples"]).replace("\\u0000", "\x00")
+    assert payload["samples"][0]["linhas_amostra"] == [{"uf": "SP"}]
