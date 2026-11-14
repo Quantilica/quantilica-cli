@@ -34,13 +34,32 @@ console = Console()
 err_console = Console(stderr=True)
 
 
+# Tamanho de catalog.column.nome no portal.
+NOME_COLUNA_MAX = 128
+_CONTROLE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _motivo_nome_invalido(nome: str) -> str | None:
+    """Por que o portal recusaria este nome de coluna (``None`` se aceita)."""
+    if not nome.strip():
+        return "sem nome"
+    if _CONTROLE.search(nome):
+        return "caractere de controle"
+    if len(nome.strip()) > NOME_COLUNA_MAX:
+        return f"mais de {NOME_COLUNA_MAX} caracteres"
+    return None
+
+
 def _sanitize_value(val: Any) -> Any:
     """Converte valores Python/Arrow em tipos primitivos compatíveis com JSON."""
     if val is None:
         return None
     if isinstance(val, bool):
         return val
-    if isinstance(val, (int, float, str)):
+    if isinstance(val, str):
+        # O jsonb do Postgres não aceita \u0000.
+        return val.replace("\x00", "")
+    if isinstance(val, (int, float)):
         return val
     if isinstance(val, decimal.Decimal):
         return float(val)
@@ -48,11 +67,11 @@ def _sanitize_value(val: Any) -> Any:
         return val.isoformat()
     if isinstance(val, bytes):
         try:
-            return val.decode("utf-8")
+            return val.decode("utf-8").replace("\x00", "")
         except UnicodeDecodeError:
             return val.hex()
     if isinstance(val, dict):
-        return {str(k): _sanitize_value(v) for k, v in val.items()}
+        return {str(k).replace("\x00", ""): _sanitize_value(v) for k, v in val.items()}
     if isinstance(val, (list, tuple, set)):
         return [_sanitize_value(x) for x in val]
     if hasattr(val, "as_py"):
@@ -280,9 +299,31 @@ def _extract_dataset_metadata(
 
             pf = pq.ParquetFile(first_parquet)
             schema = pf.schema_arrow
-            schema_arrow_json = {f.name: str(f.type) for f in schema}
+            # Nome de coluna que o portal não aceita (vazio, acima de 128 caracteres
+            # ou com caractere de controle) fica fora do catálogo, do esquema e da
+            # amostra, com aviso. No lake de 13/11/2026: cabeçalho com delimitador
+            # sobrando no fim (nome vazio), CSV lido com o delimitador errado (o
+            # cabeçalho inteiro vira um nome) e UTF-16 lido como latin-1 (NUL).
+            invalidos: dict[str, str] = {}
+            for f in schema:
+                motivo = _motivo_nome_invalido(f.name)
+                if motivo:
+                    invalidos[f.name] = motivo
+            if invalidos:
+                logger.warning(
+                    "%s: %d coluna(s) fora do catálogo por nome inválido (%s); "
+                    "reveja a conversão do dataset.",
+                    full_id,
+                    len(invalidos),
+                    ", ".join(sorted(set(invalidos.values()))),
+                )
+            schema_arrow_json = {
+                f.name: str(f.type) for f in schema if f.name not in invalidos
+            }
 
             for field in schema:
+                if field.name in invalidos:
+                    continue
                 if field.name not in partition_keys:
                     columns.append(
                         {
@@ -304,7 +345,7 @@ def _extract_dataset_metadata(
                     table = table.slice(0, sample_size)
                 # Serialização segura para JSON
                 pydict = table.to_pydict()
-                keys = list(pydict.keys())
+                keys = [k for k in pydict if k not in invalidos]
                 for idx in range(table.num_rows):
                     row: dict[str, Any] = {}
                     for k in keys:
