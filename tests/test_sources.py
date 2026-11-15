@@ -86,6 +86,10 @@ def test_cmd_install_success(temp_config_dir: Path):
 
     with (
         patch("quantilica.cli.sources.get_installed_entry_points", return_value=set()),
+        # No workspace conjunto os fetchers estão instalados de verdade: os ids e
+        # apelidos declarados (FetcherInfo) também precisam vir do mock.
+        patch("quantilica.cli.sources.installed_declared_names", return_value={}),
+        patch("quantilica.cli.sources.is_dist_installed", return_value=False),
         patch("quantilica.cli.sources.install_package") as mock_install,
     ):
         result = runner.invoke(app, ["install", "comex", "--no-exec"])
@@ -126,6 +130,7 @@ def test_cmd_doctor(temp_config_dir: Path):
         patch(
             "quantilica.cli.sources.get_installed_entry_points", return_value={"comex"}
         ),
+        patch("quantilica.cli.sources.installed_declared_names", return_value={}),
         patch("quantilica.cli.sources.install_package") as mock_install,
     ):
         result = runner.invoke(app, ["doctor"])
