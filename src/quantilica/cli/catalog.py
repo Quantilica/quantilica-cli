@@ -194,6 +194,10 @@ class CatalogBuild:
     restricted: Counter[str] = field(default_factory=Counter)
     #: ``source_id`` do lake que o registro não conhece (ficam fora do payload).
     unknown: set[str] = field(default_factory=set)
+    #: Datasets do payload que ficaram sem perfil de colunas, com o motivo.
+    sem_perfil: dict[str, str] = field(default_factory=dict)
+    #: O ``quantilica-core`` instalado não tem ``lake_profile``: nenhum perfil.
+    perfil_indisponivel: bool = False
 
 
 def _sigla(orgao: str | None) -> str | None:
@@ -226,17 +230,102 @@ def _declared_text(desc_data: Mapping[str, Any], key: str) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
+def _lake_profile_module() -> Any | None:
+    """``quantilica.core.lake_profile``, ou ``None`` se o core instalado não o tem."""
+    try:
+        from quantilica.core import lake_profile
+    except ImportError:
+        return None
+    return lake_profile
+
+
+def _nome_fora_do_perfil(nome: str) -> str | None:
+    """Por que o nome não pode seguir no perfil (o portal o recusaria).
+
+    Vale o critério do catálogo (:func:`_motivo_nome_invalido`) e, além dele,
+    espaços nas pontas e mais de 128 caracteres brutos: o portal confere o perfil
+    contra ``columns`` pelo nome exato.
+    """
+    motivo = _motivo_nome_invalido(nome)
+    if motivo:
+        return motivo
+    if nome != nome.strip():
+        return "espaços nas pontas"
+    if len(nome) > NOME_COLUNA_MAX:
+        return f"mais de {NOME_COLUNA_MAX} caracteres"
+    return None
+
+
+def _perfil_do_dataset(
+    mod: Any, dataset_dir: Path, full_id: str
+) -> tuple[Any | None, str | None]:
+    """Perfil do dataset pelos rodapés Parquet: ``(LakeProfile, motivo_sem_perfil)``.
+
+    ``dataset_dir`` é ``<lake>/<fonte>/<dataset>``. O documento ``perfil`` segue
+    sem alteração, salvo a coluna cujo nome o portal recusa: sai do documento e o
+    hash é recalculado (o portal confere o perfil contra ``columns``, onde essa
+    coluna também não entra).
+    """
+    try:
+        prof = mod.profile_from_lake(
+            dataset_dir.parent.parent, dataset_dir.parent.name, dataset_dir.name
+        )
+    except FileNotFoundError:
+        return None, "sem arquivo Parquet"
+    except (ValueError, ImportError) as exc:
+        return None, str(exc)
+    except Exception as exc:  # rodapé ilegível, arquivo corrompido
+        return None, f"falha ao ler os rodapés: {exc}"
+
+    invalidos = {
+        nome: motivo
+        for nome in prof.perfil["colunas"]
+        if (motivo := _nome_fora_do_perfil(nome))
+    }
+    if invalidos:
+        logger.warning(
+            "%s: %d coluna(s) fora do perfil por nome inválido (%s).",
+            full_id,
+            len(invalidos),
+            ", ".join(sorted(set(invalidos.values()))),
+        )
+        perfil = {
+            **prof.perfil,
+            "colunas": {
+                n: c for n, c in prof.perfil["colunas"].items() if n not in invalidos
+            },
+        }
+        prof = mod.LakeProfile(
+            perfil,
+            [c for c in prof.colunas if c["nome"] not in invalidos],
+            mod.perfil_sha256(perfil),
+        )
+    tamanho = _tamanho_json(prof.perfil)
+    if tamanho > LOTE_MAX_BYTES:
+        return None, f"perfil de {tamanho} bytes não cabe num envio"
+    return prof, None
+
+
 def _extract_dataset_metadata(
     descriptor_path: Path,
     sample_size: int = 20,
     lake_root: Path | None = None,
     registry: Registry | None = None,
+    profile_mod: Any | None = None,
 ) -> dict[str, Any] | None:
     """Extrai metadados, colunas e amostras de um _dataset.json e seus Parquets.
 
     O ``source_id`` do descritor é resolvido contra ``registry`` (apelido vira
     id canônico). O resultado traz ``restrita`` (fonte de redistribuição
     restrita) e ``conhecida`` (``source_id`` presente no registro).
+
+    Com ``profile_mod`` (``quantilica.core.lake_profile``) o resultado traz também
+    ``perfil`` (o item de ``perfis`` do payload) ou ``sem_perfil`` (o motivo). As
+    colunas passam a ser a união das colunas do perfil com as do primeiro Parquet
+    (o portal exige uma linha em ``columns`` para cada coluna do perfil); o
+    ``dtype_arrow`` do perfil vale (é o do último período em que a coluna existe).
+    ``percentual_nulos`` e o período de cada coluna não são enviados: o portal os
+    calcula do perfil.
     """
     try:
         desc_text = descriptor_path.read_text(encoding="utf-8")
@@ -282,12 +371,20 @@ def _extract_dataset_metadata(
                 "dtype_arrow": partition_types.get(p_key, "Utf8"),
                 "eh_particao_hive": True,
                 "eh_chave_cruzamento": False,
-                "percentual_nulos": 0.0,
                 "descricao": f"Chave de partição Hive ({p_key})",
                 "display_order": order,
             }
         )
         order += 1
+
+    perfil_item: dict[str, Any] | None = None
+    sem_perfil: str | None = None
+    prof = None
+    if profile_mod is not None:
+        prof, sem_perfil = _perfil_do_dataset(profile_mod, dataset_dir, full_id)
+    dtype_do_perfil = (
+        {c["nome"]: c["dtype_arrow"] for c in prof.colunas} if prof else {}
+    )
 
     sample_rows: list[dict[str, Any]] = []
     schema_arrow_json: dict[str, Any] = {}
@@ -329,10 +426,11 @@ def _extract_dataset_metadata(
                         {
                             "dataset_id": full_id,
                             "nome": field.name,
-                            "dtype_arrow": str(field.type),
+                            "dtype_arrow": dtype_do_perfil.get(
+                                field.name, str(field.type)
+                            ),
                             "eh_particao_hive": False,
                             "eh_chave_cruzamento": False,
-                            "percentual_nulos": 0.0,
                             "descricao": None,
                             "display_order": order,
                         }
@@ -357,6 +455,29 @@ def _extract_dataset_metadata(
                 first_parquet,
                 exc,
             )
+
+    if prof is not None:
+        presentes = {c["nome"] for c in columns}
+        for c in prof.colunas:
+            if c["nome"] in presentes:
+                continue
+            columns.append(
+                {
+                    "dataset_id": full_id,
+                    "nome": c["nome"],
+                    "dtype_arrow": c["dtype_arrow"],
+                    "eh_particao_hive": False,
+                    "eh_chave_cruzamento": False,
+                    "descricao": None,
+                    "display_order": order,
+                }
+            )
+            order += 1
+        perfil_item = {
+            "dataset_id": full_id,
+            "perfil": prof.perfil,
+            "perfil_sha256": prof.perfil_sha256,
+        }
 
     source_obj = _source_object(source_id, info, total_bytes)
 
@@ -401,6 +522,8 @@ def _extract_dataset_metadata(
         "sample": sample_obj,
         "restrita": restricted,
         "conhecida": info is not None,
+        "perfil": perfil_item,
+        "sem_perfil": sem_perfil,
     }
 
 
@@ -421,12 +544,27 @@ def build_catalog(
     datasets_list: list[dict[str, Any]] = []
     columns_list: list[dict[str, Any]] = []
     samples_list: list[dict[str, Any]] = []
+    perfis_list: list[dict[str, Any]] = []
     build = CatalogBuild(payload={})
 
     if not lake_dir.is_dir():
         logger.warning("Diretório do Lake %s não existe.", lake_dir)
-        build.payload = {"sources": [], "datasets": [], "columns": [], "samples": []}
+        build.payload = {
+            "sources": [],
+            "datasets": [],
+            "columns": [],
+            "samples": [],
+            "perfis": [],
+        }
         return build
+
+    profile_mod = _lake_profile_module()
+    if profile_mod is None:
+        build.perfil_indisponivel = True
+        logger.warning(
+            "O quantilica-core instalado não tem lake_profile: nenhum perfil de "
+            "colunas será enviado. Atualize o quantilica-core."
+        )
 
     wanted = None
     if source_filter:
@@ -437,7 +575,11 @@ def build_catalog(
     # Busca todos os descritores _dataset.json
     for desc_path in sorted(lake_dir.rglob("_dataset.json")):
         meta = _extract_dataset_metadata(
-            desc_path, sample_size=sample_size, lake_root=lake_dir, registry=registry
+            desc_path,
+            sample_size=sample_size,
+            lake_root=lake_dir,
+            registry=registry,
+            profile_mod=profile_mod,
         )
         if not meta:
             continue
@@ -465,6 +607,15 @@ def build_catalog(
         sources_dict.setdefault(src["id"], src)
         datasets_list.append(meta["dataset"])
         columns_list.extend(meta["columns"])
+        if meta["perfil"]:
+            perfis_list.append(meta["perfil"])
+        elif meta["sem_perfil"]:
+            build.sem_perfil[meta["dataset"]["id"]] = meta["sem_perfil"]
+            logger.warning(
+                "%s: sem perfil de colunas (%s).",
+                meta["dataset"]["id"],
+                meta["sem_perfil"],
+            )
         # Com --sample-size 0 a amostra não vai: enviar linhas vazias apagaria
         # no portal a amostra de um envio anterior.
         if sample_size > 0 and (
@@ -489,6 +640,7 @@ def build_catalog(
         "datasets": datasets_list,
         "columns": columns_list,
         "samples": samples_list,
+        "perfis": perfis_list,
     }
     return build
 
@@ -527,6 +679,14 @@ def send_catalog_payload(
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         err_body = exc.read().decode("utf-8", errors="replace")
+        # O portal responde {"detail": "..."} (com \\uXXXX no lugar dos acentos):
+        # o motivo, com o dataset, sai legível.
+        try:
+            detalhe = json.loads(err_body).get("detail")
+        except (ValueError, AttributeError):
+            detalhe = None
+        if isinstance(detalhe, str):
+            err_body = detalhe
         raise RuntimeError(
             f"Falha na sincronização HTTP {exc.code} em {url}: {err_body}"
         ) from exc
@@ -633,6 +793,33 @@ def _somar_respostas(respostas: list[dict[str, Any]]) -> dict[str, Any]:
     return total
 
 
+def _tabela_de_perfis(perfis: list[dict[str, Any]]) -> Table:
+    """Resumo por dataset do que seria enviado: períodos, colunas, eras e tamanho."""
+    mod = _lake_profile_module()
+    tabela = Table(title="Perfis de colunas (--dry-run)", show_header=True)
+    tabela.add_column("Dataset", style="cyan")
+    tabela.add_column("Períodos")
+    tabela.add_column("Colunas", justify="right")
+    tabela.add_column("Eras", justify="right")
+    tabela.add_column("Tamanho", justify="right")
+    for item in perfis:
+        doc = item["perfil"]
+        periodos = doc["periodos"]
+        intervalo = (
+            f"{periodos[0]} a {periodos[-1]}" if len(periodos) > 1 else periodos[0]
+        )
+        unidade = "meses" if doc["granularidade"] == "mensal" else "anos"
+        eras = len(mod.derivar_eras(doc)) if mod is not None else 0
+        tabela.add_row(
+            item["dataset_id"],
+            f"{intervalo} ({len(periodos)} {unidade})",
+            str(len(doc["colunas"])),
+            str(eras),
+            f"{_tamanho_json(item) / 1024:.1f} KiB",
+        )
+    return tabela
+
+
 @app.command("sync")
 def cmd_catalog_sync(
     lake_dir: Annotated[
@@ -730,6 +917,7 @@ def cmd_catalog_sync(
     datasets_count = len(payload.get("datasets", []))
     columns_count = len(payload.get("columns", []))
     samples_count = len(payload.get("samples", []))
+    perfis = payload.get("perfis", [])
 
     table = Table(title="Metadados Extraídos para Sincronização", show_header=True)
     table.add_column("Entidade", style="cyan")
@@ -738,6 +926,8 @@ def cmd_catalog_sync(
     table.add_row("Datasets Parquet", str(datasets_count))
     table.add_row("Colunas e Chaves", str(columns_count))
     table.add_row("Amostras de Dados", str(samples_count))
+    table.add_row("Perfis de colunas", str(len(perfis)))
+    table.add_row("Datasets sem perfil", str(len(build.sem_perfil)))
     table.add_row(
         "Deixados de fora (redistribuição restrita)",
         str(sum(build.restricted.values())),
@@ -755,12 +945,37 @@ def cmd_catalog_sync(
             + ", ".join(sorted(build.unknown))
         )
 
+    if build.perfil_indisponivel:
+        console.print(
+            "[yellow]O quantilica-core instalado não tem lake_profile:[/yellow] "
+            "nenhum perfil de colunas será enviado. Atualize o quantilica-core."
+        )
+    if build.sem_perfil:
+        mostrados = sorted(build.sem_perfil.items())[:20]
+        console.print(
+            "[yellow]Sem perfil de colunas:[/yellow] "
+            + "; ".join(f"{k} ({v})" for k, v in mostrados)
+            + (
+                f"; e mais {len(build.sem_perfil) - len(mostrados)}"
+                if len(build.sem_perfil) > len(mostrados)
+                else ""
+            )
+        )
+
     if dry_run:
         console.print(
             "[yellow]Modo --dry-run ativo:[/yellow] nenhum dado enviado para o portal."
         )
+        if perfis:
+            console.print(_tabela_de_perfis(perfis))
+        # Os perfis saem no resumo acima, não no JSON (podem ter megabytes).
         console.print_json(
-            json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+            json.dumps(
+                {k: v for k, v in payload.items() if k != "perfis"},
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
         )
         return
 
@@ -789,6 +1004,12 @@ def cmd_catalog_sync(
         console.print(
             f"[green]✓ Catálogo sincronizado com sucesso![/green] Resposta: {res}"
         )
+        contagem = res.get("counts") if isinstance(res, dict) else None
+        if isinstance(contagem, dict) and "profiles" in contagem:
+            console.print(
+                f"Perfis de colunas: {contagem['profiles']} recebidos, "
+                f"{contagem.get('profiles_changed', 0)} alterados."
+            )
     except Exception as exc:
         err_console.print(f"[red]Erro ao sincronizar catálogo:[/red] {exc}")
         raise typer.Exit(code=1) from exc
