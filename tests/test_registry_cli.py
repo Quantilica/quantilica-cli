@@ -13,6 +13,7 @@ from quantilica.cli import registry as reg
 from quantilica.cli import sources
 from quantilica.cli.registry import app
 from quantilica.cli.sdk import FetcherApp, derive_fetcher_info
+from tests.renomes import aceita_resolucao
 
 runner = CliRunner()
 
@@ -161,7 +162,10 @@ def test_apelidos_do_info_instalado_nao_contradizem_a_tabela():
     conflicts = {
         n: (dist, sources._RESERVA_OFFLINE[n])
         for n, dist in names.items()
-        if n in sources._RESERVA_OFFLINE and sources._RESERVA_OFFLINE[n] != dist
+        if n in sources._RESERVA_OFFLINE
+        # um renome do fetcher (historico) não é contradição: a reserva guarda
+        # o nome antigo, que leva à distribuição nova
+        and not aceita_resolucao(dist, sources._RESERVA_OFFLINE[n])
     }
     assert not conflicts, f"FetcherInfo contradiz _RESERVA_OFFLINE: {conflicts}"
 

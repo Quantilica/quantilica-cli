@@ -6,6 +6,7 @@ import pytest
 
 from quantilica.cli import sources
 from quantilica.cli.registry import discover_fetchers
+from tests.renomes import aceita_resolucao
 
 # Tabela antiga (escrita à mão) congelada: tudo isso precisa continuar valendo.
 TABELA_ANTIGA = {
@@ -49,6 +50,16 @@ TABELA_ANTIGA = {
 
 @pytest.mark.parametrize(("nome", "dist"), sorted(TABELA_ANTIGA.items()))
 def test_nomes_antigos_resolvem_para_a_mesma_distribuicao(nome, dist):
+    # Num ambiente com um fetcher renomeado instalado, o nome antigo leva à
+    # distribuição nova (apelido do FetcherInfo ou `historico`): também vale.
+    obtida = sources.resolve_dist(nome)
+    assert aceita_resolucao(obtida, dist), f"{nome!r}: {obtida!r}, esperava {dist!r}"
+
+
+@pytest.mark.parametrize(("nome", "dist"), sorted(TABELA_ANTIGA.items()))
+def test_reserva_offline_resolve_os_ids_antigos(nome, dist, monkeypatch):
+    """Sem fetcher instalado e sem rede, só a reserva e a regra: tabela exata."""
+    monkeypatch.setattr(sources, "installed_declared_names", dict)
     assert sources.resolve_dist(nome) == dist
 
 
@@ -89,3 +100,22 @@ def test_sidra_e_ibge_levam_ao_fetcher_renomeado():
 def test_nome_antigo_da_distribuicao_avisa_no_stderr(capsys):
     assert sources.resolve_dist("sidra-fetcher") == "ibge-sidra-fetcher"
     assert "renomeada para 'ibge-sidra-fetcher'" in capsys.readouterr().err
+
+
+def test_ambiente_com_fetcher_renomeado_segue_o_historico(monkeypatch):
+    """`transparencia-sp` renomeado para `ensaio-sp`: a tabela de 14/11 ainda passa."""
+    from quantilica.cli import registry as reg
+
+    instalados = {
+        "ensaio-sp": "ensaio-sp-fetcher",
+        "transparencia-sp": "ensaio-sp-fetcher",
+        "transparencia_sp": "ensaio-sp-fetcher",
+    }
+    monkeypatch.setattr(sources, "installed_declared_names", lambda: instalados)
+    monkeypatch.setattr(reg, "declared_source_names", lambda: instalados)
+    for nome in ("transparencia-sp", "transparencia_sp"):
+        obtida = sources.resolve_dist(nome)
+        assert obtida == "ensaio-sp-fetcher"
+        assert aceita_resolucao(obtida, TABELA_ANTIGA[nome])
+    # um id que nada tem a ver com o renome continua exigindo a tabela
+    assert not aceita_resolucao("outra-fetcher", TABELA_ANTIGA["anp"])
