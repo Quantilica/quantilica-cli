@@ -25,6 +25,7 @@ from typing import Annotated, Any
 import typer
 from quantilica.core.registry import FetcherInfo, RegistryError
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from quantilica.cli import __version__
@@ -781,6 +782,9 @@ def _somar_respostas(respostas: list[dict[str, Any]]) -> dict[str, Any]:
                 total[chave] = valor
             elif isinstance(valor, (int, float)):
                 total[chave] = total.get(chave, 0) + valor
+            elif isinstance(valor, list):
+                total.setdefault(chave, [])
+                total[chave] = [*total[chave], *valor]
             elif isinstance(valor, dict):
                 sub = total.setdefault(chave, {})
                 for k, v in valor.items():
@@ -791,6 +795,33 @@ def _somar_respostas(respostas: list[dict[str, Any]]) -> dict[str, Any]:
             else:
                 total[chave] = valor
     return total
+
+
+def _avisa_perfis_recusados(res: Any) -> None:
+    """Avisa, sem falhar, dos perfis que o portal recusou (o catálogo foi gravado).
+
+    O portal recusa só o perfil de um dataset (documento inválido, acima do teto de
+    células, coluna sem linha em ``columns``) e grava o resto.
+    ``counts.profiles_refused`` conta; ``profiles_refused`` traz ``dataset_id`` e
+    ``motivo``.
+    """
+    if not isinstance(res, dict):
+        return
+    contagem = res.get("counts")
+    recusados = res.get("profiles_refused")
+    n = contagem.get("profiles_refused", 0) if isinstance(contagem, dict) else 0
+    itens = [r for r in recusados if isinstance(r, dict)] if recusados else []
+    if not n and not itens:
+        return
+    console.print(
+        f"[yellow]Aviso: o portal recusou {n or len(itens)} perfil(is) de colunas; "
+        "o resto do catálogo foi gravado.[/yellow]"
+    )
+    for r in itens:
+        console.print(
+            f"[yellow]  - Perfil recusado: {escape(str(r.get('dataset_id')))}: "
+            f"{escape(str(r.get('motivo')))}[/yellow]"
+        )
 
 
 def _tabela_de_perfis(perfis: list[dict[str, Any]]) -> Table:
@@ -1010,6 +1041,7 @@ def cmd_catalog_sync(
                 f"Perfis de colunas: {contagem['profiles']} recebidos, "
                 f"{contagem.get('profiles_changed', 0)} alterados."
             )
+        _avisa_perfis_recusados(res)
     except Exception as exc:
         err_console.print(f"[red]Erro ao sincronizar catálogo:[/red] {exc}")
         raise typer.Exit(code=1) from exc

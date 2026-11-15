@@ -119,6 +119,8 @@ class ServidorFalso:
         self.corpos: list[dict[str, Any]] = []
         self.perfis: dict[str, str] = {}  # dataset_id -> sha gravado
         self.colunas: dict[str, set[str]] = {}
+        #: dataset_id -> motivo: o que o portal recusa só no perfil daquele dataset.
+        self.recusar: dict[str, str] = {}
 
     def urlopen(self, req: Any, timeout: float | None = None) -> _Resp:
         corpo = json.loads(req.data.decode("utf-8"))
@@ -126,6 +128,7 @@ class ServidorFalso:
         for col in corpo.get("columns", []):
             self.colunas.setdefault(col["dataset_id"], set()).add(col["nome"])
         profiles = changed = 0
+        recusados: list[dict[str, str]] = []
         vistos: set[str] = set()
         for item in corpo.get("perfis", []):
             ds = item["dataset_id"]
@@ -134,10 +137,20 @@ class ServidorFalso:
                 motivo = f"perfil repetido no payload: {ds}"
             elif _portal_perfil_sha256(item["perfil"]) != item["perfil_sha256"]:
                 motivo = f"perfil de {ds}: perfil_sha256 não confere com o documento"
-            else:
+            if motivo is None:
                 fantasmas = set(item["perfil"]["colunas"]) - self.colunas.get(ds, set())
-                if fantasmas:
-                    motivo = f"perfil de {ds}: coluna sem linha em 'columns'"
+                if fantasmas or ds in self.recusar:
+                    # Recusa só este perfil: o sync segue (200) e a resposta o lista.
+                    vistos.add(ds)
+                    recusados.append(
+                        {
+                            "dataset_id": ds,
+                            "motivo": self.recusar.get(
+                                ds, "coluna sem linha em 'columns'"
+                            ),
+                        }
+                    )
+                    continue
             if motivo:
                 raise urllib.error.HTTPError(
                     req.full_url,
@@ -153,7 +166,12 @@ class ServidorFalso:
                 changed += 1
         resposta = {
             "status": "success",
-            "counts": {"profiles": profiles, "profiles_changed": changed},
+            "counts": {
+                "profiles": profiles,
+                "profiles_changed": changed,
+                "profiles_refused": len(recusados),
+            },
+            "profiles_refused": recusados,
         }
         return _Resp(json.dumps(resposta).encode())
 
@@ -222,6 +240,53 @@ def test_primeiro_e_segundo_sync_identicos(
     assert r2.exit_code == 0, r2.output
     assert "2 recebidos, 0 alterados" in _junta(r2.output)
     assert srv.corpos[0] == srv.corpos[1]
+
+
+def test_perfil_recusado_pelo_portal_avisa_com_dataset_e_motivo_e_sai_com_0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _dataset(tmp_path, "anp", "precos")
+    _dataset(tmp_path, "cvm", "fundos")
+    srv = ServidorFalso()
+    srv.recusar["cvm/fundos"] = "inválido: linhas: 'linhas' deve ter [1, 2] valores"
+    monkeypatch.setattr("urllib.request.urlopen", srv.urlopen)
+
+    res = _sync(tmp_path)
+    assert res.exit_code == 0, res.output  # o catálogo foi gravado
+    saida = _junta(res.output)
+    assert "1 recebidos, 1 alterados" in saida
+    assert "o portal recusou 1 perfil(is) de colunas" in saida
+    # dataset e motivo aparecem, com colchetes do motivo intactos (não são markup)
+    assert "Perfil recusado: cvm/fundos: inválido: linhas:" in saida
+    assert "deve ter [1, 2] valores" in saida
+    assert "anp/precos: " not in saida.split("Perfil recusado")[-1]
+
+
+def test_sem_recusa_nao_ha_aviso(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _dataset(tmp_path, "anp", "precos")
+    monkeypatch.setattr("urllib.request.urlopen", ServidorFalso().urlopen)
+    res = _sync(tmp_path)
+    assert res.exit_code == 0, res.output
+    assert "recusou" not in _junta(res.output)
+
+
+def test_somar_respostas_junta_as_listas_de_perfis_recusados() -> None:
+    soma = catalog_mod._somar_respostas(
+        [
+            {
+                "counts": {"profiles": 1, "profiles_refused": 1},
+                "profiles_refused": [{"dataset_id": "a/x", "motivo": "m1"}],
+            },
+            {
+                "counts": {"profiles": 2, "profiles_refused": 1},
+                "profiles_refused": [{"dataset_id": "b/y", "motivo": "m2"}],
+            },
+        ]
+    )
+    assert soma["counts"] == {"profiles": 3, "profiles_refused": 2}
+    assert [r["dataset_id"] for r in soma["profiles_refused"]] == ["a/x", "b/y"]
 
 
 def test_dataset_sem_parquet_pula_com_aviso(
