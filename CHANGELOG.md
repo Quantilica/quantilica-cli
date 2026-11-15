@@ -7,16 +7,20 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+
+## [0.23.0] - 2026-11-15
 ### Adicionado
 - `quantilica catalog sync` envia o perfil de colunas de cada dataset do lake na chave `perfis` do payload (`{"dataset_id", "perfil", "perfil_sha256"}`): por período, o total de linhas e os nulos de cada coluna, lidos dos rodapés Parquet por `quantilica.core.lake_profile.profile_from_lake`. O documento segue sem alteração, com o hash do core; só a coluna cujo nome o portal recusa sai do perfil (e do catálogo), com o hash recalculado. O perfil de um dataset nunca é partido entre lotes e viaja com as colunas dele. As colunas enviadas passam a ser a união das do perfil com as do primeiro Parquet, com o `dtype_arrow` do último período em que a coluna existe, porque o portal exige uma linha em `columns` para cada coluna do perfil. **O recurso exige o `quantilica-core` com `lake_profile`** (ainda sem release; o piso de versão não mudou): sem ele, o cli avisa e segue sem perfis. Dataset sem Parquet, sem partição `ano=` ou com perfil acima do limite do envio fica sem perfil, com aviso e o motivo.
 - `quantilica catalog sync --dry-run` imprime, por dataset, o resumo do perfil (intervalo e número de períodos, colunas, eras de esquema e tamanho do documento); o JSON do payload deixa de repetir o perfil.
 - Depois do envio, o cli informa quantos perfis o portal recebeu e quantos mudaram (`profiles` e `profiles_changed`; um segundo sync idêntico altera 0). Se o portal recusar o perfil de algum dataset (`counts.profiles_refused` e a lista `profiles_refused` da resposta), o cli avisa com o dataset e o motivo de cada um e termina com código 0: o resto do catálogo foi gravado. Com vários lotes, as listas de recusas são concatenadas.
 
 ### Alterado
+- Piso de `quantilica-core` sobe para `>=0.23.0` (o perfil de colunas usa `quantilica.core.lake_profile`).
 - `quantilica catalog sync` deixa de enviar `percentual_nulos` (o portal calcula do perfil, junto com `periodo_inicio` e `periodo_fim`).
 - O erro HTTP do envio mostra o `detail` do portal em vez do JSON cru (o 400 de perfil traz o dataset e o motivo).
 
 ### Corrigido
+- `quantilica catalog sync`: os Parquets de cada dataset são lidos em ordem de caminho. Sem o perfil de colunas, o esquema enviado vinha do primeiro arquivo na ordem do sistema de arquivos, que varia entre máquinas.
 - CI: o pyproject declara o PyPI antes do índice Quantilica (`[[tool.uv.index]]`), e o workflow perde `--index` e `--index-strategy`. Com a estratégia padrão `first-index`, o `uv sync` só consulta o índice para o que não está no PyPI (`quantilica-analytics`) e deixa de receber o 503 intermitente que o GitHub Pages devolve a caminhos inexistentes.
 
 ## [0.22.0] - 2026-11-14
