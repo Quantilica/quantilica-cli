@@ -345,7 +345,7 @@ def _extract_dataset_metadata(
     restricted = info is not None and info.redistribuicao == "restrita"
 
     dataset_dir = descriptor_path.parent
-    parquet_files = list(dataset_dir.rglob("*.parquet"))
+    parquet_files = sorted(dataset_dir.rglob("*.parquet"))
     total_arquivos = len(parquet_files)
     total_bytes = sum(f.stat().st_size for f in parquet_files)
     total_rows = _count_rows(parquet_files)
