@@ -1320,23 +1320,37 @@ class FetcherApp:
         # Pooling por worker: cada thread mantém seu HttpClient com keep-alive.
         thread_local = threading.local()
         _worker_clients: list[HttpClient] = []
+        # O client do app, antes de qualquer troca por um client de thread.
+        base_client = self.client
 
         def _get_worker_client() -> HttpClient | FtpClient:
-            if isinstance(self.client, FtpClient):
-                return self.client
+            if isinstance(base_client, FtpClient):
+                return base_client
             if not hasattr(thread_local, "client"):
                 # Reusa config do client canônico, mas com sessão persistente.
                 c = HttpClient(
-                    timeout=self.client.timeout,
-                    headers=dict(self.client.headers),
-                    follow_redirects=self.client.follow_redirects,
-                    attempts=self.client.attempts,
-                    retry_base_delay=self.client.retry_base_delay,
-                    verify=self.client.verify,
-                    transport=self.client.transport,
-                    limits=self.client.limits,
+                    timeout=base_client.timeout,
+                    headers=dict(base_client.headers),
+                    follow_redirects=base_client.follow_redirects,
+                    attempts=base_client.attempts,
+                    retry_base_delay=base_client.retry_base_delay,
+                    verify=base_client.verify,
+                    transport=base_client.transport,
+                    limits=base_client.limits,
                     emulate_browser=True,
                 )
+                if base_client.host_policies:
+                    # Política por host: o ritmo, a pausa do 429 e o teto de
+                    # simultâneas são do host, não da thread. Sem política o
+                    # worker segue independente, como sempre foi.
+                    share = getattr(c, "share_host_state", None)
+                    if share is not None:
+                        share(base_client)
+                    else:  # quantilica-core anterior à política compartilhada
+                        logger.warning(
+                            "quantilica-core sem share_host_state: os downloads "
+                            "paralelos não compartilham a política por host"
+                        )
                 c.__enter__()
                 thread_local.client = c
                 _worker_clients.append(c)
@@ -1345,7 +1359,6 @@ class FetcherApp:
         def _worker(entry: dict[str, Any]) -> bool:
             # Troca temporária do client para o da thread (com pooling).
             worker_client = _get_worker_client()
-            prev = self.client
             self.client = worker_client  # type: ignore[assignment]
             try:
                 eid = entry.get("id", "unknown")
@@ -1358,8 +1371,6 @@ class FetcherApp:
             except Exception as exc:
                 errors.append((entry.get("id", "unknown"), str(exc)))
                 return False
-            finally:
-                self.client = prev
 
         with graceful_executor(max_workers=workers) as executor:
             try:
@@ -1379,6 +1390,9 @@ class FetcherApp:
                 console.print("\n[yellow]Interrompido.[/yellow]")
                 raise typer.Exit(130) from None
             finally:
+                # Devolve o client do app: as threads o trocam pelo seu e, com
+                # a troca por thread, o "anterior" de uma pode ser o de outra.
+                self.client = base_client
                 for c in _worker_clients:
                     with contextlib.suppress(Exception):
                         c.close()

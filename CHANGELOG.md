@@ -7,6 +7,11 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+### Corrigido
+
+- `FetcherApp.download_datasets` respeita a política por host do client do app (`HttpClient.host_policies`): os clients das threads passam a compartilhar as políticas e o estado do limitador (`min_interval`, pausa de `429` com `Retry-After`, `max_concurrency`) com o client do app, com `HttpClient.share_host_state`. Antes cada thread criava um client sem política e com limitador próprio, e o host recebia N vezes o ritmo configurado com N `--workers`; o fetcher precisava sobrescrever `download_datasets` para contornar. Sem política por host nada muda (clients independentes, mesmo paralelismo). **Depende do `quantilica-core` com `share_host_state` e `max_concurrency` em `stream()` (ainda sem release; o piso de versão não mudou)**: com um core anterior, os downloads seguem sem política compartilhada e o cli avisa no log.
+- Ao fim de `download_datasets` o `self.client` volta sempre ao client do app. Antes, com threads concorrentes, podia ficar um client de thread (já fechado) no lugar dele.
+
 
 ## [0.24.0] - 2026-11-15
 ### Alterado
