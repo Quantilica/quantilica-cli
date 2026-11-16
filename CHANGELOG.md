@@ -6,6 +6,10 @@ O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
+### Adicionado
+- `lake audit --somente-leitura --estado ARQ.json` (a auditoria de um lake montado só para leitura: não escreve nada nele, fonte com `_em-atualizacao.json` fica "em atualização" e não reprova, o `_build.json` é conferido) e `lake audit --limpar-marcador` (remove o marcador das fontes publicadas). `--estado` e `--json-file` apontando para dentro do lake são recusados com `--somente-leitura`. Exigem o `quantilica-analytics` que traz o marcador e o manifesto do build.
+- `catalog sync` e `docs schema` ganham `--estado ARQ.json` (ou `QUANTILICA_LAKE_ESTADO`): só leem as fontes que o estado dá como `publicado` e cujo `build_id` bate com o `_build.json` atual, e pulam as demais com aviso (`docs schema`, que trata uma fonte só, sai com 1). Sem estado, as fontes com `_em-atualizacao.json` são puladas com aviso e o resto segue como antes, inclusive um lake sem `_build.json`. O `catalog sync` deixa de descer nas pastas das fontes puladas. Estado inexistente ou inválido é erro.
+
 ### Alterado
 - Verificação de tipos com `pyright` (`[tool.pyright]`, modo `basic`) zerada em `src`.
 

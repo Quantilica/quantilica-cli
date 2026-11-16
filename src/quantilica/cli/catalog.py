@@ -29,6 +29,11 @@ from rich.markup import escape
 from rich.table import Table
 
 from quantilica.cli import __version__
+from quantilica.cli.lake_estado import (
+    ESTADO_ENV,
+    EstadoInvalido,
+    PoliticaDePublicacao,
+)
 
 logger = logging.getLogger("quantilica.cli.catalog")
 console = Console()
@@ -199,6 +204,9 @@ class CatalogBuild:
     sem_perfil: dict[str, str] = field(default_factory=dict)
     #: O ``quantilica-core`` instalado não tem ``lake_profile``: nenhum perfil.
     perfil_indisponivel: bool = False
+    #: Fontes do lake que não foram lidas (em atualização, ou sem publicação
+    #: confirmada pelo estado), com o motivo.
+    puladas: dict[str, str] = field(default_factory=dict)
 
 
 def _sigla(orgao: str | None) -> str | None:
@@ -528,16 +536,50 @@ def _extract_dataset_metadata(
     }
 
 
+def _descritores(
+    lake_dir: Path, politica: PoliticaDePublicacao, puladas: dict[str, str]
+) -> list[Path]:
+    """Os ``_dataset.json`` do lake, sem entrar nas fontes que a política recusa.
+
+    Só a pasta da raiz que é uma fonte (tem marcador de atualização ou um
+    ``<dataset>/_dataset.json``) entra em ``puladas``; ``ledger/`` e afins não.
+    """
+    achados: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(lake_dir):
+        aqui = Path(dirpath)
+        if aqui == lake_dir:
+            if "_dataset.json" in filenames:
+                achados.append(aqui / "_dataset.json")
+            for nome in sorted(dirnames):
+                motivo = politica.motivo(nome)
+                if motivo is None:
+                    continue
+                dirnames.remove(nome)
+                pasta = lake_dir / nome
+                if (pasta / "_em-atualizacao.json").exists() or any(
+                    pasta.glob("*/_dataset.json")
+                ):
+                    puladas[nome] = motivo
+            continue
+        if "_dataset.json" in filenames:
+            achados.append(aqui / "_dataset.json")
+    return sorted(achados)
+
+
 def build_catalog(
     lake_dir: Path,
     source_filter: str | None = None,
     sample_size: int = 20,
     registry: Registry | None = None,
+    politica: PoliticaDePublicacao | None = None,
 ) -> CatalogBuild:
     """Varre o Lake e monta o payload, o que ficou de fora e o que é desconhecido.
 
     ``registry`` ausente carrega os fetchers instalados. Fontes de
-    redistribuição restrita não entram no payload.
+    redistribuição restrita não entram no payload. ``politica`` decide quais
+    fontes podem ser lidas (marcador de atualização e arquivo de estado, ver
+    :mod:`quantilica.cli.lake_estado`); sem ela, só as com marcador ficam de fora.
+    As puladas vão em ``CatalogBuild.puladas``.
     """
     if registry is None:
         registry = load_registry()
@@ -573,8 +615,9 @@ def build_catalog(
         wanted = found.id if found else source_filter
 
     seen_ids: set[str] = set()
+    politica = politica or PoliticaDePublicacao(lake_dir)
     # Busca todos os descritores _dataset.json
-    for desc_path in sorted(lake_dir.rglob("_dataset.json")):
+    for desc_path in _descritores(lake_dir, politica, build.puladas):
         meta = _extract_dataset_metadata(
             desc_path,
             sample_size=sample_size,
@@ -925,9 +968,26 @@ def cmd_catalog_sync(
             help="Exibe o payload JSON extraído sem enviar HTTP para o Portal.",
         ),
     ] = False,
+    estado: Annotated[
+        Path | None,
+        typer.Option(
+            "--estado",
+            envvar=ESTADO_ENV,
+            help="Arquivo de estado gravado por 'lake audit --somente-leitura "
+            "--estado': só lê as fontes publicadas e no mesmo build do "
+            "_build.json atual. Sem ele, só as fontes com _em-atualizacao.json "
+            "ficam de fora.",
+            dir_okay=False,
+        ),
+    ] = None,
 ) -> None:
     """Sincroniza os metadados do Universal Hive Parquet Lake com o Portal."""
     target_lake = (lake_dir or _default_lake_dir()).expanduser().resolve()
+    try:
+        politica = PoliticaDePublicacao.de(target_lake, estado)
+    except EstadoInvalido as exc:
+        err_console.print(f"[red]Erro:[/red] {escape(str(exc))}", highlight=False)
+        raise typer.Exit(1) from None
     console.print(
         f"[cyan]Varrendo Universal Hive Parquet Lake em:[/cyan] {target_lake}"
     )
@@ -949,6 +1009,7 @@ def cmd_catalog_sync(
         source_filter=source,
         sample_size=safe_sample_size,
         registry=(registry := load_registry(registry_file)),
+        politica=politica,
     )
     payload = build.payload
     if not registry and not dry_run:
@@ -981,6 +1042,8 @@ def cmd_catalog_sync(
     )
     table.add_row("Fontes desconhecidas do registro", str(len(build.unknown)))
     console.print(table)
+    for aviso in politica.avisos(build.puladas):
+        console.print(f"[yellow]Aviso:[/yellow] {escape(aviso)}", highlight=False)
     if build.restricted:
         console.print(
             "[yellow]Fora do payload (restrita):[/yellow] "

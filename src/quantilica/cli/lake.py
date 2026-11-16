@@ -12,11 +12,12 @@ de modo que ``--help`` funciona sem ele.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
@@ -70,6 +71,11 @@ def _split_sources(value: str | None) -> list[str] | None:
     if not sources:
         raise _fail("--sources está vazio: informe fontes separadas por vírgula.", 2)
     return sources
+
+
+def _is_inside(path: Path, folder: Path) -> bool:
+    """Se ``path`` (existente ou não) fica dentro de ``folder``, links resolvidos."""
+    return Path(os.path.realpath(path)).is_relative_to(os.path.realpath(folder))
 
 
 def _read_list(path: Path) -> list[str]:
@@ -407,8 +413,48 @@ def audit(
             dir_okay=False,
         ),
     ] = None,
+    read_only: Annotated[
+        bool,
+        typer.Option(
+            "--somente-leitura",
+            help="Não escreve nada no lake (para um lake montado só para "
+            "leitura): fonte com _em-atualizacao.json fica 'em atualização' e "
+            "não reprova; fonte sem _build.json fica 'incompleta'",
+        ),
+    ] = False,
+    state: Annotated[
+        Path | None,
+        typer.Option(
+            "--estado",
+            help="Arquivo JSON (fora do lake) que recebe, por fonte, o build_id "
+            "auditado, o resultado (publicado, em_atualizacao, incompleto, "
+            "falhou) e a data; é o que os comandos de leitura consultam",
+            dir_okay=False,
+        ),
+    ] = None,
+    clear_marker: Annotated[
+        bool,
+        typer.Option(
+            "--limpar-marcador",
+            help="Remove o _em-atualizacao.json das fontes publicadas (única "
+            "escrita que a auditoria faz no lake; não vale com --somente-leitura)",
+        ),
+    ] = False,
 ) -> None:
     """Audita o lake; sai com 0 se aprovado e com 1 se houver achados."""
+    if read_only and clear_marker:
+        raise _fail(
+            "--limpar-marcador escreve no lake e não vale com --somente-leitura.",
+            EXIT_USAGE,
+        )
+    if read_only:
+        for flag, target in (("--estado", state), ("--json-file", json_file)):
+            if target is not None and _is_inside(target, lake):
+                raise _fail(
+                    f"{flag} aponta para dentro do lake ({target}); com "
+                    "--somente-leitura nada pode ser gravado ali.",
+                    EXIT_USAGE,
+                )
     try:
         # extra opcional `lake`: ausente do ambiente de dev padrão
         from quantilica.analytics.lake_audit import (  # pyright: ignore[reportMissingImports]
@@ -419,6 +465,14 @@ def audit(
 
     wanted = _split_sources(sources)
     known = _read_list(exceptions) if exceptions is not None else ()
+    # Só o que foi pedido: a auditoria comum segue valendo com um analytics anterior.
+    publicacao: dict[str, Any] = {}
+    if read_only:
+        publicacao["read_only"] = True
+    if clear_marker:
+        publicacao["clear_marker"] = True
+    if state is not None:
+        publicacao["state"] = state
     try:
         with _log_to_stderr():
             report = lake_audit(
@@ -431,6 +485,7 @@ def audit(
                 known_exceptions=known,
                 rehash=rehash,
                 workers=workers,
+                **publicacao,
             )
     except KeyboardInterrupt:
         err_console.print("[yellow]Interrompido.[/yellow]")

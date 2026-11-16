@@ -56,3 +56,27 @@ quantilica lake audit --lake /dados/lake --input /dados/vigente --json-file audi
 - `--ledger ARQ` (opcional, só em `audit`) confere a proveniência também contra uma
   exportação do ledger; sem ele, a conferência usa o `sha256` dos manifestos ou do
   próprio arquivo.
+
+### Lake numa pasta sincronizada
+
+Quando o lake mora numa pasta sincronizada por um cliente de nuvem, uma máquina
+constrói e audita ali, e outra lê a mesma pasta sem nunca escrever nela. O cliente
+envia os arquivos em ordem qualquer, então quem lê precisa de um critério próprio de
+"publicado":
+
+- `build` grava `<lake>/<fonte>/_em-atualizacao.json` antes de escrever a fonte, e
+  `<lake>/<fonte>/_build.json` (o manifesto: `build_id` e o tamanho de todos os
+  Parquets da fonte) ao fim de um build bem-sucedido. Um build que falha na fonte não
+  grava o manifesto e mantém o marcador.
+- Na máquina que constrói, `audit --limpar-marcador` remove o marcador das fontes cuja
+  auditoria passa.
+- Na máquina que lê, `audit --somente-leitura --estado ESTADO.json` não escreve nada
+  no lake e confere o manifesto (todo arquivo listado existe com o mesmo tamanho, e
+  não há Parquet fora dele). Por fonte, o `ESTADO.json` (fora do lake) recebe o
+  `build_id` auditado e o resultado: `publicado`, `em_atualizacao` (há marcador; não
+  reprova), `incompleto` (faltou arquivo, tamanho diferente, Parquet extra ou sem
+  `_build.json`) ou `falhou` (outro achado).
+- `catalog sync` e `docs schema` aceitam `--estado ESTADO.json` (ou a variável
+  `QUANTILICA_LAKE_ESTADO`): só leem as fontes `publicado` cujo `build_id` é o do
+  `_build.json` atual, e pulam as demais com aviso. Sem estado, pulam só as fontes com
+  `_em-atualizacao.json`; um lake sem `_build.json` segue como antes.
