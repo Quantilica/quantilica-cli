@@ -301,7 +301,13 @@ def test_docs_schema_refuses_a_source_being_updated(tmp_path: Path) -> None:
 
 def test_docs_schema_with_state(tmp_path: Path) -> None:
     lake = _docs_lake(tmp_path / "lake")
-    _manifesto(lake, "alfa", "B1")
+    tamanhos = {
+        p.relative_to(lake / "alfa").as_posix(): p.stat().st_size
+        for p in (lake / "alfa").rglob("*.parquet")
+    }
+    (lake / "alfa" / MANIFESTO).write_text(
+        json.dumps({"build_id": "B1", "parquets": tamanhos}), encoding="utf-8"
+    )
     bom = _estado(tmp_path / "bom.json", alfa=("B1", "publicado"))
     velho = _estado(tmp_path / "velho.json", alfa=("B0", "publicado"))
 
@@ -425,3 +431,123 @@ def test_audit_state_feeds_catalog_sync_end_to_end(tmp_path: Path, monkeypatch) 
     assert sync.exit_code == 0, out
     assert f"fonte {atualizando} pulada" in out
     assert all(f"{f}/" in out for f in prontas)
+
+
+# --- revisão: o disco precisa bater com o manifesto na hora de ler ----------------
+
+
+def _com_parquets(lake: Path, fonte: str, build_id: str, tamanhos: dict[str, int]):
+    """Escreve os Parquets (só bytes) e o manifesto que os lista."""
+    for rel, tam in tamanhos.items():
+        arquivo = lake / fonte / rel
+        arquivo.parent.mkdir(parents=True, exist_ok=True)
+        arquivo.write_bytes(b"x" * tam)
+    (lake / fonte / MANIFESTO).write_text(
+        json.dumps({"build_id": build_id, "parquets": tamanhos}), encoding="utf-8"
+    )
+
+
+@pytest.mark.parametrize(
+    ("estrago", "trecho"),
+    [
+        (
+            lambda p: (p / "dados" / "ano=1" / "novo.parquet").write_bytes(b"y"),
+            "fora do",
+        ),
+        (lambda p: (p / "dados" / "ano=1" / "a.parquet").unlink(), "faltando"),
+        (
+            lambda p: (p / "dados" / "ano=1" / "a.parquet").write_bytes(b"xx"),
+            "outro tamanho",
+        ),
+    ],
+    ids=["parquet-novo-antes-do-marcador", "arquivo-faltando", "tamanho-diferente"],
+)
+def test_policy_skips_a_source_whose_disk_does_not_match_the_manifest(
+    tmp_path: Path, estrago, trecho: str
+) -> None:
+    lake = _lake(tmp_path / "lake")
+    _com_parquets(lake, "cvm", "B1", {"dados/ano=1/a.parquet": 5})
+    estado = ler_estado(_estado(tmp_path / "e.json", cvm=("B1", "publicado")))
+    politica = PoliticaDePublicacao(lake, estado)
+    assert politica.motivo("cvm") is None  # o conjunto está inteiro
+
+    estrago(lake / "cvm")
+    motivo = PoliticaDePublicacao(lake, estado).motivo("cvm")
+
+    assert motivo is not None and trecho in motivo and MANIFESTO in motivo
+
+
+def test_policy_ignores_hidden_folders_when_checking_the_manifest(
+    tmp_path: Path,
+) -> None:
+    lake = _lake(tmp_path / "lake")
+    _com_parquets(lake, "cvm", "B1", {"dados/a.parquet": 3})
+    (lake / "cvm" / "dados" / ".tmp").mkdir()
+    (lake / "cvm" / "dados" / ".tmp" / "resto.parquet").write_bytes(b"z")
+    estado = ler_estado(_estado(tmp_path / "e.json", cvm=("B1", "publicado")))
+
+    assert PoliticaDePublicacao(lake, estado).motivo("cvm") is None
+
+
+def test_policy_without_state_does_not_compare_the_disk(tmp_path: Path) -> None:
+    # Sem estado o lake segue como antes: Parquets de fora do build são normais.
+    lake = _lake(tmp_path / "lake")
+    _com_parquets(lake, "cvm", "B1", {"dados/a.parquet": 3})
+    (lake / "cvm" / "dados" / "de-um-convert.parquet").write_bytes(b"y")
+
+    assert PoliticaDePublicacao(lake).motivo("cvm") is None
+
+
+def test_sync_skips_a_source_with_a_half_synced_build(tmp_path: Path) -> None:
+    lake = _lake(tmp_path / "lake")
+    _com_parquets(lake, "cvm", "B1", {"dados/a.parquet": 5})
+    _com_parquets(lake, "anp", "B1", {"dados/a.parquet": 5})
+    (lake / "anp" / "dados" / "b2.parquet").write_bytes(b"do build B2")
+    estado = _estado(
+        tmp_path / "e.json", cvm=("B1", "publicado"), anp=("B1", "publicado")
+    )
+
+    out = _plain(_sync(lake, "--estado", str(estado)).output)
+
+    assert "cvm/dados" in out and "anp/dados" not in out
+    assert "fonte anp pulada" in out and "fora do manifesto" in out
+
+
+def test_audit_state_requires_read_only(tmp_path: Path) -> None:
+    lake = _lake(tmp_path / "lake")
+
+    res = runner.invoke(
+        app,
+        ["lake", "audit", "--lake", str(lake), "--estado", str(tmp_path / "e.json")],
+    )
+
+    assert res.exit_code == 2
+    assert "--somente-leitura" in _plain(res.output)
+    assert not (tmp_path / "e.json").exists()
+
+
+def test_audit_with_an_old_analytics_asks_to_update(
+    tmp_path: Path, monkeypatch
+) -> None:
+    pytest.importorskip("quantilica.analytics.lake_audit")
+    engine = sys.modules["quantilica.analytics.lake_audit"]
+
+    def velho(lake_dir, *, input_dir=None, workers=None, **kwargs):
+        # como um analytics sem as opções novas: não aceita read_only
+        if "read_only" in kwargs:
+            raise TypeError(
+                "lake_audit() got an unexpected keyword argument 'read_only'"
+            )
+        raise AssertionError("não devia chegar aqui")
+
+    monkeypatch.setattr(engine, "lake_audit", velho)
+    lake = _lake(tmp_path / "lake")
+
+    res = runner.invoke(
+        app, ["lake", "audit", "--lake", str(lake), "--somente-leitura"]
+    )
+
+    out = _plain(res.output)
+    assert res.exit_code == 2
+    assert "Atualize" in out and "quantilica-analytics" in out
+    assert "Traceback" not in out

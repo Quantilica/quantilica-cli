@@ -442,6 +442,12 @@ def audit(
     ] = False,
 ) -> None:
     """Audita o lake; sai com 0 se aprovado e com 1 se houver achados."""
+    if state is not None and not read_only:
+        raise _fail(
+            "--estado só vale com --somente-leitura: o estado descreve o que a "
+            "máquina que lê enxerga, e a que constrói não o grava.",
+            EXIT_USAGE,
+        )
     if read_only and clear_marker:
         raise _fail(
             "--limpar-marcador escreve no lake e não vale com --somente-leitura.",
@@ -490,6 +496,16 @@ def audit(
     except KeyboardInterrupt:
         err_console.print("[yellow]Interrompido.[/yellow]")
         raise typer.Exit(EXIT_INTERRUPTED) from None
+    except TypeError as exc:
+        # Um quantilica-analytics anterior não conhece as opções novas.
+        if publicacao and any(f"'{k}'" in str(exc) for k in publicacao):
+            raise _fail(
+                "o quantilica-analytics instalado não conhece "
+                "--somente-leitura/--estado/--limpar-marcador. Atualize-o: "
+                f"{ANALYTICS_HINT}",
+                EXIT_USAGE,
+            ) from None
+        raise
     except (OSError, ValueError) as exc:
         raise _fail(str(exc)) from exc
 

@@ -78,5 +78,14 @@ envia os arquivos em ordem qualquer, então quem lê precisa de um critério pr�
   `_build.json`) ou `falhou` (outro achado).
 - `catalog sync` e `docs schema` aceitam `--estado ESTADO.json` (ou a variável
   `QUANTILICA_LAKE_ESTADO`): só leem as fontes `publicado` cujo `build_id` é o do
-  `_build.json` atual, e pulam as demais com aviso. Sem estado, pulam só as fontes com
-  `_em-atualizacao.json`; um lake sem `_build.json` segue como antes.
+  `_build.json` atual **e** cujo disco bate com esse manifesto na hora da leitura (cada
+  Parquet listado existe com o mesmo tamanho e não há Parquet fora da lista; o cliente
+  de sincronização pode ter entregue arquivos de um build novo depois da auditoria).
+  As demais são puladas com aviso. Quem lê deve sempre usar o estado (de preferência
+  pela variável de ambiente): sem ele só o marcador protege a leitura, e um lake sem
+  `_build.json` segue como antes.
+- `--estado` do `audit` só vale com `--somente-leitura` (exit 2 sem ele). O manifesto
+  só vale para o que o `build` escreveu: Parquets gravados por outros caminhos (os
+  `convert` dos fetchers) não o têm, e a auditoria `--somente-leitura` chama essa fonte
+  de `incompleto`. O manifesto compara nomes e tamanhos, não o conteúdo: um arquivo
+  reescrito com o mesmo tamanho passa despercebido.

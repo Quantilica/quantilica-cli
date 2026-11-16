@@ -20,7 +20,14 @@ Regras de :meth:`PoliticaDePublicacao.motivo`:
   também);
 * com estado, só entra a fonte cujo resultado é ``publicado`` e cujo ``build_id``
   é o do ``_build.json`` atual (sem ``_build.json``, o estado também não pode
-  citar um ``build_id``). As demais são puladas, com o motivo.
+  citar um ``build_id``), **e** cujo disco bate com esse manifesto no momento da
+  leitura: cada Parquet listado existe com o mesmo tamanho e não há Parquet fora
+  da lista. Isso fecha a janela entre a auditoria e a leitura, em que o cliente de
+  sincronização pode entregar arquivos de um build novo antes do marcador (ou
+  tirar o marcador antes dos Parquets). As demais são puladas, com o motivo.
+
+Quem lê um lake sincronizado deve sempre usar o estado (``--estado`` ou
+``QUANTILICA_LAKE_ESTADO``): sem ele só o marcador protege a leitura.
 """
 
 from __future__ import annotations
@@ -73,16 +80,78 @@ def ler_estado(caminho: Path) -> dict[str, dict[str, Any]]:
     return {k: v for k, v in fontes.items() if isinstance(v, dict)}
 
 
-def _build_id_do_manifesto(pasta: Path) -> tuple[bool, str | None]:
-    """``(há manifesto legível, build_id)``."""
+def _ler_manifesto(pasta: Path) -> tuple[bool, dict[str, Any] | None]:
+    """``(há manifesto, seu conteúdo)``; conteúdo ``None`` se ilegível."""
     try:
         dados = json.loads((pasta / MANIFESTO).read_text(encoding="utf-8"))
     except FileNotFoundError:
         return False, None
     except (OSError, UnicodeDecodeError, ValueError):
         return True, None
-    build_id = dados.get("build_id") if isinstance(dados, dict) else None
-    return True, build_id if isinstance(build_id, str) else None
+    if not isinstance(dados, dict):
+        return True, None
+    tamanhos = dados.get("parquets")
+    if not isinstance(dados.get("build_id"), str) or not isinstance(tamanhos, dict):
+        return True, None
+    if not all(
+        isinstance(v, int) and not isinstance(v, bool) for v in tamanhos.values()
+    ):
+        return True, None
+    return True, dados
+
+
+def _parquets_no_disco(pasta: Path) -> dict[str, int]:
+    """``{caminho relativo à fonte: tamanho}`` dos Parquets da fonte.
+
+    Mesma varredura da auditoria: pastas com ``.`` no começo ficam de fora e um
+    link para pasta é seguido uma vez por destino real.
+    """
+    achados: dict[str, int] = {}
+    vistos: set[str] = set()
+    pilha: list[tuple[Path, tuple[str, ...]]] = [(pasta, ())]
+    while pilha:
+        atual, rel = pilha.pop()
+        real = os.path.realpath(atual)
+        if real in vistos:
+            continue
+        vistos.add(real)
+        with os.scandir(atual) as it:
+            for entrada in it:
+                if entrada.name.startswith("."):
+                    continue
+                if entrada.is_dir():
+                    pilha.append((Path(entrada.path), (*rel, entrada.name)))
+                elif entrada.name.endswith(".parquet"):
+                    achados["/".join((*rel, entrada.name))] = entrada.stat().st_size
+    return achados
+
+
+def _diverge_do_manifesto(pasta: Path, listados: dict[str, int]) -> str | None:
+    """Por que o disco não bate com o manifesto; ``None`` se bate."""
+    try:
+        no_disco = _parquets_no_disco(pasta)
+    except OSError as exc:
+        return f"não consegui listar a fonte para conferir o {MANIFESTO}: {exc}"
+    faltando = sorted(set(listados) - set(no_disco))
+    tamanho = sorted(
+        r for r in listados if r in no_disco and no_disco[r] != listados[r]
+    )
+    extras = sorted(set(no_disco) - set(listados))
+    if not (faltando or tamanho or extras):
+        return None
+    partes = []
+    for rotulo, itens in (
+        ("faltando", faltando),
+        ("com outro tamanho", tamanho),
+        ("fora do manifesto", extras),
+    ):
+        if itens:
+            partes.append(f"{len(itens)} {rotulo} (ex.: {itens[0]})")
+    return (
+        f"o disco não bate com o {MANIFESTO}: "
+        + ", ".join(partes)
+        + " (a sincronização não terminou, ou há um build em curso)"
+    )
 
 
 class PoliticaDePublicacao:
@@ -123,19 +192,19 @@ class PoliticaDePublicacao:
         if resultado != PUBLICADO:
             return f"o estado diz '{resultado}', não '{PUBLICADO}'"
         auditado = entrada.get("build_id")
-        existe, atual = _build_id_do_manifesto(pasta)
+        existe, manifesto = _ler_manifesto(pasta)
         if not existe:
             if auditado is None:
                 return None  # lake anterior ao manifesto, auditado assim
             return f"o estado cita o build {auditado}, mas não há {MANIFESTO}"
-        if atual is None:
+        if manifesto is None:
             return f"{MANIFESTO} ilegível"
-        if auditado != atual:
+        if auditado != manifesto["build_id"]:
             return (
-                f"o estado auditou o build {auditado}, o lake está no build {atual} "
-                "(rode a auditoria de novo)"
+                f"o estado auditou o build {auditado}, o lake está no build "
+                f"{manifesto['build_id']} (rode a auditoria de novo)"
             )
-        return None
+        return _diverge_do_manifesto(pasta, manifesto["parquets"])
 
     def avisos(self, puladas: dict[str, str]) -> list[str]:
         """Uma linha de aviso por fonte pulada."""
