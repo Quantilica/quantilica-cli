@@ -417,6 +417,23 @@ def default_client() -> HttpClient:
     )
 
 
+_aviso_core_antigo = False
+_aviso_core_lock = threading.Lock()
+
+
+def _warn_core_sem_estado_compartilhado() -> None:
+    """Avisa uma só vez por processo (não por thread) que o core é antigo."""
+    global _aviso_core_antigo
+    with _aviso_core_lock:
+        if _aviso_core_antigo:
+            return
+        _aviso_core_antigo = True
+    logger.warning(
+        "quantilica-core sem share_host_state: os downloads paralelos não "
+        "compartilham a política por host"
+    )
+
+
 class DataRepository(StampedDataRepository):
     """Canonical data repository layout shared by Quantilica fetchers.
 
@@ -1347,10 +1364,7 @@ class FetcherApp:
                     if share is not None:
                         share(base_client)
                     else:  # quantilica-core anterior à política compartilhada
-                        logger.warning(
-                            "quantilica-core sem share_host_state: os downloads "
-                            "paralelos não compartilham a política por host"
-                        )
+                        _warn_core_sem_estado_compartilhado()
                 c.__enter__()
                 thread_local.client = c
                 _worker_clients.append(c)
