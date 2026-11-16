@@ -7,6 +7,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+
+## [0.25.0] - 2026-11-16
 ### Alterado
 
 - Piso de `quantilica-core` sobe para `>=0.25.0` (`HttpClient.share_host_state` e `max_concurrency` em `stream()`, de que o `download_datasets` depende para compartilhar a política por host entre as threads).
