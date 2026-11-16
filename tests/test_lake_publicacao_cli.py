@@ -25,7 +25,9 @@ _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _plain(text: str) -> str:
-    return _ANSI.sub("", text)
+    # Sem ANSI e com o espaço normalizado: o rich quebra linhas longas (caminhos
+    # do Windows) no meio das mensagens.
+    return " ".join(_ANSI.sub("", text).split())
 
 
 FONTES = ("cvm", "anp", "anac")
