@@ -1,6 +1,6 @@
 [project]
 name = "quantilica-cli"
-version = "0.25.0"
+version = "0.26.0"
 description = "Unified CLI for Quantilica open data fetchers"
 readme = "README.md"
 authors = [{ name = "Komesu, D.K.", email = "daniel@dkko.me" }]
@@ -27,7 +27,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Motor de `quantilica lake build` e `quantilica lake audit`.
-lake = ["quantilica-analytics>=0.11.0", "pyarrow>=15.0.0"]
+lake = ["quantilica-analytics>=0.13.0", "pyarrow>=15.0.0"]
 # `quantilica docs`: verificação da documentação dos dados dos fetchers.
 docs = ["quantilica-core[docs]>=0.25.0"]
 
