@@ -363,6 +363,51 @@ def test_dry_run_resume_cada_perfil(tmp_path: Path) -> None:
     assert "nulos" not in res.output
 
 
+@pytest.mark.parametrize(
+    ("granularidade", "n", "esperado"),
+    [
+        ("anual", 1, "1 ano"),
+        ("anual", 3, "3 anos"),
+        ("semestral", 4, "4 semestres"),
+        ("trimestral", 8, "8 trimestres"),
+        ("trimestral", 1, "1 trimestre"),
+        ("mensal", 2, "2 meses"),
+        ("mensal", 1, "1 mês"),
+        ("diaria", 31, "31 dias"),
+        ("diaria", 1, "1 dia"),
+        ("outra", 2, "2 períodos"),
+    ],
+)
+def test_unidade_de_periodo_por_granularidade(
+    granularidade: str, n: int, esperado: str
+) -> None:
+    unidade = catalog_mod._unidade_de_periodo(granularidade, n)
+    assert f"{n} {unidade}" == esperado
+
+
+def test_dry_run_resume_perfil_trimestral(tmp_path: Path) -> None:
+    from quantilica.core import lake_profile
+
+    if not hasattr(lake_profile, "GRANULARIDADES"):
+        pytest.skip("quantilica-core sem as granularidades novas do perfil")
+    base = tmp_path / "cvm" / "divida"
+    base.mkdir(parents=True)
+    (base / "_dataset.json").write_text(
+        json.dumps({"source_id": "cvm", "dataset_id": "divida", "alias": "divida"}),
+        encoding="utf-8",
+    )
+    for ano, tri in [(2023, 3), (2023, 4), (2024, 1)]:
+        pasta = base / f"ano={ano}" / f"trimestre={tri}"
+        pasta.mkdir(parents=True)
+        pq.write_table(pa.table({"valor": [1.0, None]}), pasta / "part-0.parquet")
+    res = runner.invoke(
+        app, ["catalog", "sync", "--lake-dir", str(tmp_path), "--dry-run"]
+    )
+    assert res.exit_code == 0, res.output
+    saida = _junta(res.output)
+    assert "2023-T3 a 2024-T1 (3 trimestres)" in saida
+
+
 def test_core_sem_lake_profile_avisa_e_segue_sem_perfis(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

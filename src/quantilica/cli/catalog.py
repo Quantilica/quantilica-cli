@@ -824,6 +824,22 @@ def _avisa_perfis_recusados(res: Any) -> None:
         )
 
 
+# granularidade do perfil -> (singular, plural) do período no resumo.
+_UNIDADES_DE_PERIODO = {
+    "anual": ("ano", "anos"),
+    "semestral": ("semestre", "semestres"),
+    "trimestral": ("trimestre", "trimestres"),
+    "mensal": ("mês", "meses"),
+    "diaria": ("dia", "dias"),
+}
+
+
+def _unidade_de_periodo(granularidade: str, n: int) -> str:
+    """Unidade de contagem dos períodos de um perfil: ``8 trimestres``, ``1 mês``."""
+    singular, plural = _UNIDADES_DE_PERIODO.get(granularidade, ("período", "períodos"))
+    return singular if n == 1 else plural
+
+
 def _tabela_de_perfis(perfis: list[dict[str, Any]]) -> Table:
     """Resumo por dataset do que seria enviado: períodos, colunas, eras e tamanho."""
     mod = _lake_profile_module()
@@ -839,7 +855,7 @@ def _tabela_de_perfis(perfis: list[dict[str, Any]]) -> Table:
         intervalo = (
             f"{periodos[0]} a {periodos[-1]}" if len(periodos) > 1 else periodos[0]
         )
-        unidade = "meses" if doc["granularidade"] == "mensal" else "anos"
+        unidade = _unidade_de_periodo(doc["granularidade"], len(periodos))
         eras = len(mod.derivar_eras(doc)) if mod is not None else 0
         tabela.add_row(
             item["dataset_id"],

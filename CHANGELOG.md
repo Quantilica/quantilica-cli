@@ -7,6 +7,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+### Alterado
+- `quantilica catalog sync --dry-run`: o resumo do perfil conta os períodos na unidade da granularidade (`8 trimestres`, `4 semestres`, `31 dias`, `1 mês`), em vez de só `meses` ou `anos`. Os perfis semestrais, trimestrais e diários dependem da versão do `quantilica-core` com essas granularidades (ainda sem release; o piso de versão não mudou).
 
 ## [0.23.0] - 2026-11-15
 ### Adicionado
