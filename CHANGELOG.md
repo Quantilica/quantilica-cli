@@ -6,7 +6,8 @@ O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
-
+### Alterado
+- Verificação de tipos com `pyright` (`[tool.pyright]`, modo `basic`) zerada em `src`.
 
 ## [0.25.0] - 2026-11-16
 ### Alterado

@@ -271,7 +271,8 @@ def build(
 ) -> None:
     """Converte a visão vigente em Parquet; retoma uma execução interrompida."""
     try:
-        from quantilica.analytics.lake_build import (
+        # extra opcional `lake`: ausente do ambiente de dev padrão
+        from quantilica.analytics.lake_build import (  # pyright: ignore[reportMissingImports]
             InsufficientDiskError,
             LakeBuildError,
             lake_build,
@@ -409,7 +410,10 @@ def audit(
 ) -> None:
     """Audita o lake; sai com 0 se aprovado e com 1 se houver achados."""
     try:
-        from quantilica.analytics.lake_audit import lake_audit
+        # extra opcional `lake`: ausente do ambiente de dev padrão
+        from quantilica.analytics.lake_audit import (  # pyright: ignore[reportMissingImports]
+            lake_audit,
+        )
     except ImportError as exc:
         raise _missing_analytics("audit", exc) from None
 

@@ -15,11 +15,11 @@ import os
 import re
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from importlib.metadata import entry_points
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import typer
 from quantilica.core.exceptions import FetchError
@@ -464,7 +464,7 @@ def default_path_builder(
 
 def make_resolve_groups(
     groups_dict: dict[str, dict[str, Any]],
-    aliases_dict: dict[str, list[str] | str],
+    aliases_dict: Mapping[str, list[str] | str],
 ) -> Callable[[Iterable[str] | None], list[str]]:
     """Build a resolver mapping group keys/aliases to canonical group IDs.
 
@@ -972,7 +972,7 @@ class FetcherApp:
     def command_backfill(
         self,
         units: Callable[[], Iterable[str]],
-        run_unit: Callable[[str], None],
+        run_unit: Callable[..., None],
         *,
         name: str = "backfill",
         help: str = "Executar carga histórica (backfill) com checkpoint",
@@ -1124,11 +1124,13 @@ class FetcherApp:
                     # com HEAD — o timestamp do nome virá dos metadados da
                     # própria entrada, não de uma sondagem remota.
                     return None
-                probe = HttpFreshnessProbe(self.client, policy=policy)
+                # Só HTTP tem HEAD; com FtpClient o erro cai no suppress abaixo.
+                http_client = cast(HttpClient, self.client)
+                probe = HttpFreshnessProbe(http_client, policy=policy)
                 stat = probe.probe(url)
                 if stat and stat.last_modified:
                     return stat.last_modified.date()
-            return self.client.head_last_modified_date(url)
+            return cast(HttpClient, self.client).head_last_modified_date(url)
         return None
 
     def _download_file(
@@ -1439,7 +1441,7 @@ class FetcherApp:
         not_found = 0
         for url in urls_to_try:
             try:
-                candidate = self.client.head(url)
+                candidate = cast(HttpClient, self.client).head(url)  # só HTTP
             except HttpStatusError as exc:
                 head_error = exc
                 if exc.status_code == 404:
@@ -1561,9 +1563,10 @@ class FetcherApp:
         Raises:
             _ProbeNotFoundError: Se o GET de probe responder 404.
         """
-        stream = getattr(self.client, "stream", None)
-        if not callable(stream):
+        maybe_stream = getattr(self.client, "stream", None)
+        if not callable(maybe_stream):
             return None
+        stream: Callable[..., Any] = maybe_stream  # callable() narrows to object
         for attempt in range(1, _PROBE_ATTEMPTS + 1):
             try:
                 with stream(
