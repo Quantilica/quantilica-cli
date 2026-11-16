@@ -7,7 +7,10 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+
+## [0.24.0] - 2026-11-15
 ### Alterado
+- Piso de `quantilica-core` sobe para `>=0.24.0` (granularidades semestral, trimestral e diária do perfil de colunas).
 - `quantilica catalog sync --dry-run`: o resumo do perfil conta os períodos na unidade da granularidade (`8 trimestres`, `4 semestres`, `31 dias`, `1 mês`), em vez de só `meses` ou `anos`. Os perfis semestrais, trimestrais e diários dependem da versão do `quantilica-core` com essas granularidades (ainda sem release; o piso de versão não mudou).
 
 ## [0.23.0] - 2026-11-15
