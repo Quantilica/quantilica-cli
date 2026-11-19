@@ -13,6 +13,7 @@ import inspect
 import json
 import os
 import re
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
@@ -61,6 +62,20 @@ from quantilica.cli.ui import (
 )
 
 logger = get_logger(__name__)
+
+
+def _sync_accepts_summary_json(callback: Callable[..., Any] | None) -> bool:
+    """``True`` se o callback do ``sync`` tem o parâmetro ``summary_json``.
+
+    ``inspect.signature`` segue ``__wrapped__``, então um sync embrulhado com
+    ``functools.wraps`` vale pela assinatura do original.
+    """
+    if callback is None:
+        return False
+    try:
+        return "summary_json" in inspect.signature(callback).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def derive_fetcher_info(name: str) -> FetcherInfo:
@@ -871,6 +886,10 @@ class FetcherApp:
         """
         console = get_console()
         default_lake = self._default_lake()
+        # A opção só aparece na ajuda do pipeline se o 'sync' registrado a aceita
+        # (um sync próprio, p. ex. com build_default_commands=False, pode não ter):
+        # quem sonda a ajuda (um agendador) não pode ter falso positivo.
+        summary_visible = _sync_accepts_summary_json(self._registered_sync())
 
         @self.app.command("pipeline")
         def pipeline(
@@ -910,39 +929,40 @@ class FetcherApp:
             verbose: Annotated[
                 bool, typer.Option("--verbose", help="Logs detalhados")
             ] = False,
-            summary_json: Annotated[
-                Path | None,
-                typer.Option(
-                    "--summary-json",
-                    help="Resumo JSON do passo de download (o mesmo do 'sync'; "
-                    "o exit_code do arquivo é o do download, não o do pipeline).",
-                ),
-            ] = None,
+            # Valor-padrão (não Annotated): 'hidden' depende de uma variável do
+            # fechamento, que as anotações adiadas (__future__) não enxergam.
+            summary_json: Path | None = typer.Option(  # noqa: B008
+                None,
+                "--summary-json",
+                help="Resumo JSON do passo de download (o mesmo do 'sync'; "
+                "o exit_code do arquivo é o do download, não o do pipeline).",
+                hidden=not summary_visible,
+            ),
         ) -> None:
             setup_rich_logging(verbose, console=console)
             actual_output = output or self.default_output
             lake_out = lake or default_lake
             # Só repassa quando pedido: um 'sync' sobrescrito por um fetcher
             # pode não conhecer a opção.
-            sync_extra: dict[str, Any] = (
-                {"summary_json": summary_json} if summary_json is not None else {}
-            )
+            sync_extra: dict[str, Any] = {}
 
             console.print(Rule("[bold]Passo 1/2: Download[/bold]"))
-            sync_cmd = next(
-                (
-                    cmd.callback
-                    for cmd in self.app.registered_commands
-                    if cmd.name == "sync"
-                ),
-                None,
-            )
+            sync_cmd = self._registered_sync()
             if sync_cmd is None:
                 console.print(
                     "[red]Erro:[/red] pipeline requer o comando 'sync' "
                     "(build_default_commands=True)."
                 )
                 raise typer.Exit(1) from None
+            if summary_json is not None:
+                if _sync_accepts_summary_json(sync_cmd):
+                    sync_extra["summary_json"] = summary_json
+                else:
+                    print(
+                        "[Aviso] o 'sync' deste fetcher não aceita --summary-json; "
+                        "o pipeline segue sem o resumo.",
+                        file=sys.stderr,
+                    )
             sync_partial = False
             try:
                 ctx.invoke(
@@ -1836,6 +1856,17 @@ class FetcherApp:
             # Erros nunca saem como sucesso: parcial (3) se algo baixou,
             # falha total (1) se nada baixou.
             raise typer.Exit(EXIT_SYNC_PARTIAL if downloaded > 0 else 1)
+
+    def _registered_sync(self) -> Callable[..., Any] | None:
+        """Callback do comando ``sync`` registrado neste app, se houver."""
+        return next(
+            (
+                cmd.callback
+                for cmd in self.app.registered_commands
+                if cmd.name == "sync"
+            ),
+            None,
+        )
 
     def _build_commands(self) -> None:
         console = get_console()

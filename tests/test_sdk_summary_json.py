@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from quantilica.cli import summary as summary_mod
@@ -361,3 +362,120 @@ def test_pipeline_sem_a_opcao_nao_passa_nada_ao_sync(
     )
     assert result.exit_code == 0, result.output
     assert not list(tmp_path.glob("**/*.json"))
+
+
+def test_sigterm_durante_o_sync_grava_interrupted_143(tmp_path: Path) -> None:
+    import os
+    import signal
+
+    app = make_app()
+
+    def download(entries, output_dir, workers=4):
+        os.kill(os.getpid(), signal.SIGTERM)
+        raise AssertionError("o handler de SIGTERM deveria ter levantado SystemExit")
+
+    app.download_datasets = download  # type: ignore[method-assign]
+    before = signal.getsignal(signal.SIGTERM)
+    out = tmp_path / "r.json"
+    result = runner.invoke(
+        _grouped(app.app),
+        ["fd", "sync", "-o", str(tmp_path / "raw"), "--summary-json", str(out)],
+    )
+    assert result.exit_code == 143
+    data = _load(out)
+    assert data["status"] == "interrupted" and data["exit_code"] == 143
+    assert signal.getsignal(signal.SIGTERM) == before  # handler anterior restaurado
+
+
+def test_sem_a_opcao_o_sigterm_nao_e_tocado(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import signal
+
+    app = make_app()
+    seen: list[Any] = []
+
+    def download(entries, output_dir, workers=4):
+        seen.append(signal.getsignal(signal.SIGTERM))
+        return 1, 1, []
+
+    before = signal.getsignal(signal.SIGTERM)
+    monkeypatch.setattr(app, "download_datasets", download)
+    runner.invoke(_grouped(app.app), ["fd", "sync", "-o", str(tmp_path)])
+    assert seen == [before]
+
+
+def test_keyboard_interrupt_cru_vira_exit_130_igual_ao_json(
+    tmp_path: Path,
+) -> None:
+    app = make_app()
+
+    def download(entries, output_dir, workers=4):
+        raise KeyboardInterrupt
+
+    app.download_datasets = download  # type: ignore[method-assign]
+    out = tmp_path / "r.json"
+    result = runner.invoke(
+        _grouped(app.app),
+        ["fd", "sync", "-o", str(tmp_path / "raw"), "--summary-json", str(out)],
+    )
+    data = _load(out)
+    # o processo e o JSON dizem o mesmo, em qualquer versão do typer
+    assert result.exit_code == 130 == data["exit_code"]
+    assert data["status"] == "interrupted"
+
+
+def test_pipeline_com_sync_proprio_sem_a_opcao_avisa_e_segue(
+    tmp_path: Path,
+) -> None:
+    app = make_app(build_default_commands=False)
+    chamado: list[dict[str, Any]] = []
+
+    @app.app.command("sync")
+    def sync(
+        output: Annotated[Path | None, typer.Option("-o", "--output")] = None,
+        dry_run: bool = False,
+        workers: int = 4,
+        verbose: bool = False,
+        groups: Annotated[list[str] | None, typer.Argument()] = None,
+    ) -> None:
+        chamado.append({"output": output})
+
+    @app.command_pipeline
+    def conv(data_dir: Path, parquet_dir: Path) -> None:
+        pass
+
+    root = _grouped(app.app)
+    ajuda = runner.invoke(root, ["fd", "pipeline", "--help"], terminal_width=200)
+    assert "--summary-json" not in ajuda.output  # sem falso positivo na sondagem
+    out = tmp_path / "r.json"
+    result = runner.invoke(
+        root,
+        [
+            "fd",
+            "pipeline",
+            "-o",
+            str(tmp_path / "raw"),
+            "--parquet-dir",
+            str(tmp_path / "lake"),
+            "--summary-json",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert chamado  # o sync próprio rodou, sem a opção
+    assert not out.exists()
+    assert "não aceita --summary-json" in result.output
+
+
+def test_pipeline_com_sync_padrao_mostra_a_opcao_na_ajuda() -> None:
+    app = make_app()
+
+    @app.command_pipeline
+    def conv(data_dir: Path, parquet_dir: Path) -> None:
+        pass
+
+    ajuda = runner.invoke(
+        _grouped(app.app), ["fd", "pipeline", "--help"], terminal_width=200
+    )
+    assert "--summary-json" in ajuda.output

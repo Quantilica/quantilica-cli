@@ -19,7 +19,10 @@ a versão, a remoção ou a mudança de significado de um campo muda a versão):
     Nome do comando (``"sync"``).
 ``status``
     ``"success"`` (exit 0), ``"partial"`` (exit ``EXIT_SYNC_PARTIAL``, parte
-    baixou e parte falhou), ``"interrupted"`` (130 ou 143) ou ``"failed"``.
+    baixou e parte falhou), ``"interrupted"`` (130, 143 ou Ctrl-C fora do
+    download, sempre com exit 130) ou ``"failed"``. Com o resumo
+    pedido, SIGTERM vira ``SystemExit(143)`` durante o comando, para o arquivo
+    ser gravado também no timeout.
 ``exit_code``
     Código de saída do comando.
 ``dry_run``
@@ -55,6 +58,7 @@ import contextlib
 import datetime as dt
 import json
 import os
+import signal
 import sys
 import threading
 from collections.abc import Callable
@@ -205,9 +209,23 @@ class SummaryRecorder:
         self.succeeded: int | None = None
         self.errors: list[tuple[str, str]] | None = None
         self.error: str | None = None
+        self.interrupted = False
         self._started = dt.datetime.now(dt.UTC)
+        self._previous_sigterm: Any = None
+        self._sigterm_installed = False
 
     def __enter__(self) -> SummaryRecorder:
+        # Com o resumo pedido, SIGTERM (o 'timeout' do agendador, um 'kill')
+        # vira SystemExit(143): sem isso o processo morre sem passar pelo
+        # __exit__ e o arquivo não é gravado, justamente no timeout. Só na
+        # thread principal; o handler anterior volta ao sair.
+        main = threading.current_thread() is threading.main_thread()
+        if self.path is not None and main:
+            with contextlib.suppress(ValueError, OSError):
+                self._previous_sigterm = signal.signal(
+                    signal.SIGTERM, _raise_terminated
+                )
+                self._sigterm_installed = True
         return self
 
     def __exit__(
@@ -216,6 +234,10 @@ class SummaryRecorder:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
+        if self._sigterm_installed:
+            with contextlib.suppress(ValueError, OSError, TypeError):
+                signal.signal(signal.SIGTERM, self._previous_sigterm or signal.SIG_DFL)
+            self._sigterm_installed = False
         if self.path is None:
             return None
         exit_code = 0
@@ -223,7 +245,11 @@ class SummaryRecorder:
             if isinstance(exc, typer.Exit):
                 exit_code = exc.exit_code or 0
             elif isinstance(exc, KeyboardInterrupt):
+                # Fora do download (que já vira Exit(130)): o código que o
+                # typer devolve ao Ctrl-C varia com a versão (130 ou 1 do
+                # Abort do click), então fixo 130 aqui e o converto ao sair.
                 exit_code = 130
+                self.interrupted = True
             elif isinstance(exc, SystemExit):
                 code = exc.code
                 exit_code = code if isinstance(code, int) else 1
@@ -233,6 +259,8 @@ class SummaryRecorder:
                     self.error = f"{type(exc).__name__}: {exc}"[:MAX_MESSAGE_CHARS]
         with contextlib.suppress(Exception):  # o resumo nunca derruba o comando
             write_summary_json(self.path, self.build(exit_code))
+        if isinstance(exc, KeyboardInterrupt):
+            raise typer.Exit(130) from None  # o JSON e o processo dizem o mesmo
         return None
 
     def build(self, exit_code: int) -> dict[str, Any]:
@@ -262,7 +290,7 @@ class SummaryRecorder:
             status = "success"
         elif exit_code == _partial_code():
             status = "partial"
-        elif exit_code in _INTERRUPTED_CODES:
+        elif self.interrupted or exit_code in _INTERRUPTED_CODES:
             status = "interrupted"
         else:
             status = "failed"
@@ -292,6 +320,10 @@ class SummaryRecorder:
             "errors_truncated": len(errors) > MAX_ERRORS,
             "error": self.error,
         }
+
+
+def _raise_terminated(signum: int, frame: Any) -> None:
+    raise SystemExit(143)
 
 
 def _partial_code() -> int:

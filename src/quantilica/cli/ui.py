@@ -211,6 +211,8 @@ def graceful_executor(
     try:
         yield executor
         executor.shutdown(wait=True)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
+        # SystemExit: o SIGTERM do --summary-json; sem cancelar, as entradas
+        # pendentes continuariam baixando até o fim depois do sinal.
         executor.shutdown(wait=False, cancel_futures=True)
         raise
