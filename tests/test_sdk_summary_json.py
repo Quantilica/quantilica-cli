@@ -365,13 +365,16 @@ def test_pipeline_sem_a_opcao_nao_passa_nada_ao_sync(
 
 
 def test_sigterm_durante_o_sync_grava_interrupted_143(tmp_path: Path) -> None:
-    import os
     import signal
 
     app = make_app()
 
     def download(entries, output_dir, workers=4):
-        os.kill(os.getpid(), signal.SIGTERM)
+        # Chama o handler instalado em vez de os.kill: no Windows os.kill(SIGTERM) encerra o
+        # processo na hora (TerminateProcess), sem passar por handler nenhum.
+        handler = signal.getsignal(signal.SIGTERM)
+        assert callable(handler), "o sync deveria ter instalado um handler de SIGTERM"
+        handler(signal.SIGTERM, None)
         raise AssertionError("o handler de SIGTERM deveria ter levantado SystemExit")
 
     app.download_datasets = download  # type: ignore[method-assign]
