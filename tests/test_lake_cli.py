@@ -263,6 +263,109 @@ def test_audit_exceptions_file_silences_known_missing_parquet(corpus, tmp_path) 
     assert result.exit_code == 0, result.output
 
 
+def test_audit_help_lists_exceptions_from_ledger() -> None:
+    result = runner.invoke(
+        app,
+        ["lake", "audit", "--help"],
+        env={"COLUMNS": "200", "TERMINAL_WIDTH": "200"},
+    )
+    assert result.exit_code == 0
+    assert "--exceptions-from-ledger" in _plain(result.output)
+
+
+def _audit_args(corpus, *extra: str) -> list[str]:
+    return [
+        "lake", "audit", "--lake", str(corpus.lake), "--input", str(corpus.view), *extra,
+    ]  # fmt: skip
+
+
+def test_audit_exceptions_from_ledger_silence_known_missing_parquet(
+    corpus, tmp_path
+) -> None:
+    from tests.ledger_snapshots import exception_record, write_ledger_snapshot
+
+    corpus.lake_parquets()[-1].unlink()
+    # sem as exceções o lake reprova
+    assert runner.invoke(app, _audit_args(corpus)).exit_code == 1
+    snapshot = write_ledger_snapshot(
+        tmp_path / "ledger-vigente-latest.jsonl.gz", [exception_record("*")]
+    )
+    result = runner.invoke(
+        app, _audit_args(corpus, "--exceptions-from-ledger", str(snapshot))
+    )
+    assert result.exit_code == 0, result.output
+    assert "Exceções do retrato do ledger: 1" in _plain(result.output)
+    # a pasta vale pelo ledger-vigente-latest
+    result = runner.invoke(
+        app, _audit_args(corpus, "--exceptions-from-ledger", str(tmp_path))
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_audit_exceptions_from_ledger_and_file_are_united(corpus, tmp_path) -> None:
+    from tests.ledger_snapshots import exception_record, write_ledger_snapshot
+
+    parquets = corpus.lake_parquets()  # ordenados: alfa primeiro, beta por último
+    parquets[0].unlink()
+    parquets[-1].unlink()
+    # nenhuma das duas fontes cobre sozinha; a união cobre
+    snapshot = write_ledger_snapshot(
+        tmp_path / "r.jsonl.gz", [exception_record("beta/*")]
+    )
+    arquivo = tmp_path / "excecoes.txt"
+    arquivo.write_text("alfa/*\n", encoding="utf-8")
+    both = runner.invoke(
+        app,
+        _audit_args(
+            corpus,
+            "--exceptions-from-ledger", str(snapshot),
+            "--exceptions", str(arquivo),
+        ),
+    )  # fmt: skip
+    assert both.exit_code == 0, both.output
+    only_ledger = runner.invoke(
+        app, _audit_args(corpus, "--exceptions-from-ledger", str(snapshot))
+    )
+    only_file = runner.invoke(app, _audit_args(corpus, "--exceptions", str(arquivo)))
+    assert only_ledger.exit_code == 1
+    assert only_file.exit_code == 1
+
+
+def test_audit_exceptions_from_ledger_expired_do_not_silence(corpus, tmp_path) -> None:
+    from tests.ledger_snapshots import exception_record, write_ledger_snapshot
+
+    corpus.lake_parquets()[-1].unlink()
+    snapshot = write_ledger_snapshot(
+        tmp_path / "r.jsonl.gz",
+        [exception_record("*", expira_em="2020-01-01T00:00:00Z")],
+    )
+    result = runner.invoke(
+        app, _audit_args(corpus, "--exceptions-from-ledger", str(snapshot))
+    )
+    assert result.exit_code == 1
+
+
+def test_audit_exceptions_from_ledger_without_the_field_warns(corpus, tmp_path) -> None:
+    from tests.ledger_snapshots import write_ledger_snapshot
+
+    snapshot = write_ledger_snapshot(tmp_path / "antigo.jsonl.gz", None)
+    result = runner.invoke(
+        app, _audit_args(corpus, "--exceptions-from-ledger", str(snapshot))
+    )
+    assert result.exit_code == 0, result.output
+    assert "não traz exceções" in _plain(result.output)
+
+
+def test_audit_exceptions_from_ledger_corrupted_is_an_error(corpus, tmp_path) -> None:
+    snapshot = tmp_path / "quebrado.jsonl.gz"
+    snapshot.write_bytes(b"nao e gzip")
+    result = runner.invoke(
+        app, _audit_args(corpus, "--exceptions-from-ledger", str(snapshot))
+    )
+    assert result.exit_code == 1
+    assert "gzip" in _plain(result.output)
+
+
 def test_audit_missing_lake_is_a_usage_error(tmp_path: Path) -> None:
     result = runner.invoke(app, ["lake", "audit", "--lake", str(tmp_path / "nada")])
     assert result.exit_code == 2

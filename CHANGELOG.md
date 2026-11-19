@@ -7,6 +7,9 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+### Adicionado
+- `lake audit --exceptions-from-ledger RETRATO`: lê as exceções vigentes da auditoria (caminhos brutos sabidamente sem Parquet, os mesmos que o `--exceptions` aceita em arquivo texto, com padrões fnmatch) do retrato do ledger (`ledger-vigente-*.jsonl.gz`, ou a pasta com o `ledger-vigente-latest.jsonl.gz`). Vale a união com `--exceptions`, que continua funcionando. O retrato leva as exceções no cabeçalho (campo `lake_exceptions`, com contagem e sha256 próprios, conferidos na leitura); as que já expiraram (`expira_em`) são descartadas. Retrato sem o campo avisa e segue sem exceções; arquivo ilegível, de outro formato ou adulterado é erro (exit 1). O leitor (`quantilica.cli.ledger_exceptions`) usa só a biblioteca padrão e a primeira linha do arquivo: o formato é escrito por outro pacote, que o cli não importa.
+
 ## [0.26.0] - 2026-11-16
 
 ### Alterado

@@ -24,6 +24,11 @@ from rich.console import Console
 from rich.logging import RichHandler
 from rich.markup import escape
 
+from quantilica.cli.ledger_exceptions import (
+    LedgerExceptionsError,
+    read_ledger_exceptions,
+)
+
 app = typer.Typer(
     help="Montar e auditar o lake: bruto local → select → build → audit.",
     no_args_is_help=True,
@@ -90,6 +95,35 @@ def _read_list(path: Path) -> list[str]:
         if line and not line.startswith("#"):
             items.append(line)
     return items
+
+
+def _collect_exceptions(exceptions: Path | None, from_ledger: Path | None) -> list[str]:
+    """União das exceções do arquivo texto e do retrato do ledger, sem repetição."""
+    known = _read_list(exceptions) if exceptions is not None else []
+    if from_ledger is not None:
+        try:
+            snapshot = read_ledger_exceptions(from_ledger)
+        except LedgerExceptionsError as exc:
+            raise _fail(str(exc)) from exc
+        if not snapshot.declared:
+            err_console.print(
+                f"[yellow]Aviso:[/yellow] o retrato {escape(str(snapshot.path))} "
+                "não traz exceções da auditoria (gerado por uma versão anterior).",
+                highlight=False,
+            )
+        else:
+            note = (
+                f", {snapshot.expired} expirada(s) ignorada(s)"
+                if snapshot.expired
+                else ""
+            )
+            err_console.print(
+                f"Exceções do retrato do ledger: {len(snapshot.paths)}{note} "
+                f"(gerado em {snapshot.generated_at or '?'})",
+                highlight=False,
+            )
+        known.extend(snapshot.paths)
+    return list(dict.fromkeys(known))
 
 
 @contextmanager
@@ -387,6 +421,16 @@ def audit(
             dir_okay=False,
         ),
     ] = None,
+    exceptions_from_ledger: Annotated[
+        Path | None,
+        typer.Option(
+            "--exceptions-from-ledger",
+            help="Retrato do ledger (ledger-vigente-*.jsonl.gz, ou a pasta com o "
+            "ledger-vigente-latest) de onde ler as exceções vigentes da auditoria; "
+            "vale a união com --exceptions",
+            exists=True,
+        ),
+    ] = None,
     rehash: Annotated[
         bool,
         typer.Option(
@@ -470,7 +514,7 @@ def audit(
         raise _missing_analytics("audit", exc) from None
 
     wanted = _split_sources(sources)
-    known = _read_list(exceptions) if exceptions is not None else ()
+    known = _collect_exceptions(exceptions, exceptions_from_ledger)
     # Só o que foi pedido: a auditoria comum segue valendo com um analytics anterior.
     publicacao: dict[str, Any] = {}
     if read_only:
