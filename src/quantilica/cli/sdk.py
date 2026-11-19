@@ -46,6 +46,11 @@ from rich.markup import escape
 from rich.rule import Rule
 from rich.table import Table
 
+from quantilica.cli.summary import (
+    SUMMARY_SCHEMA_VERSION,
+    DownloadStats,
+    SummaryRecorder,
+)
 from quantilica.cli.ui import (
     ProgressPool,
     get_console,
@@ -524,6 +529,10 @@ class FetcherApp:
         client: HTTP or FTP client instance. Defaults to default_client().
     """
 
+    # Contadores do último ``download_datasets`` (para o ``--summary-json``);
+    # ``None`` se ainda não rodou ou se o fetcher substituiu o método.
+    last_download_stats: DownloadStats | None = None
+
     def __init__(
         self,
         name: str,
@@ -901,10 +910,23 @@ class FetcherApp:
             verbose: Annotated[
                 bool, typer.Option("--verbose", help="Logs detalhados")
             ] = False,
+            summary_json: Annotated[
+                Path | None,
+                typer.Option(
+                    "--summary-json",
+                    help="Resumo JSON do passo de download (o mesmo do 'sync'; "
+                    "o exit_code do arquivo é o do download, não o do pipeline).",
+                ),
+            ] = None,
         ) -> None:
             setup_rich_logging(verbose, console=console)
             actual_output = output or self.default_output
             lake_out = lake or default_lake
+            # Só repassa quando pedido: um 'sync' sobrescrito por um fetcher
+            # pode não conhecer a opção.
+            sync_extra: dict[str, Any] = (
+                {"summary_json": summary_json} if summary_json is not None else {}
+            )
 
             console.print(Rule("[bold]Passo 1/2: Download[/bold]"))
             sync_cmd = next(
@@ -930,6 +952,7 @@ class FetcherApp:
                     dry_run=dry_run,
                     workers=workers,
                     verbose=verbose,
+                    **sync_extra,
                 )
             except typer.Exit as exc:
                 # Falha parcial não impede converter o que já baixou; o código
@@ -1335,6 +1358,7 @@ class FetcherApp:
         downloaded = 0
         errors: list[tuple[str, str]] = []
         pool = ProgressPool(workers=workers, file_prog=file_prog)
+        stats = self.last_download_stats = DownloadStats()
 
         # Pooling por worker: cada thread mantém seu HttpClient com keep-alive.
         thread_local = threading.local()
@@ -1379,12 +1403,17 @@ class FetcherApp:
             try:
                 eid = entry.get("id", "unknown")
                 with pool.acquire(description=f"[cyan]{eid}[/cyan]") as cb:
+                    measured = stats.track().forwarding(cb)
                     if force:
-                        self.download_entry(entry, output_dir, progress=cb, force=True)
+                        self.download_entry(
+                            entry, output_dir, progress=measured, force=True
+                        )
                     else:
-                        self.download_entry(entry, output_dir, progress=cb)
+                        self.download_entry(entry, output_dir, progress=measured)
+                    stats.succeeded(measured)
                     return True
             except Exception as exc:
+                stats.failed()
                 errors.append((entry.get("id", "unknown"), str(exc)))
                 return False
 
@@ -1728,6 +1757,86 @@ class FetcherApp:
             items=[item for item in results if item is not None],
         )
 
+    def _run_sync(
+        self,
+        recorder: SummaryRecorder,
+        *,
+        groups: list[str] | None,
+        output: Path,
+        dry_run: bool,
+        workers: int,
+        from_plan: Path | None,
+        force: bool,
+    ) -> None:
+        """Corpo do comando ``sync`` (resolve entradas, baixa e reporta).
+
+        Preenche ``recorder`` e levanta ``typer.Exit`` como o comando sempre
+        fez; a gravação do ``--summary-json`` fica com o contexto do chamador.
+        """
+        console = get_console()
+        actual_output = output
+
+        if from_plan is not None:
+            try:
+                plan = CheckPlan.from_json(from_plan.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                console.print(f"[red]Plano inválido: {exc}[/red]")
+                recorder.error = f"Plano inválido: {exc}"
+                raise typer.Exit(1) from None
+            entries = [
+                self.entry_from_plan(dict(item.entry))
+                for item in plan.items
+                if item.action == "download"
+            ]
+            console.print(
+                f"[dim]Plano {from_plan}: {len(entries)} entrada(s) "
+                f"com ação 'download' de {len(plan.items)} verificada(s).[/dim]"
+            )
+        else:
+            try:
+                target_groups = self.resolve_groups(groups)
+            except ValueError as exc:
+                console.print(f"[red]{exc}[/red]")
+                console.print(f"Grupos válidos: {', '.join(self.all_keys)}")
+                recorder.error = str(exc)
+                raise typer.Exit(1) from None
+
+            entries = [e for g in target_groups for e in self.list_datasets(g)]
+
+        recorder.total = len(entries)
+
+        if dry_run:
+            recorder.dry_run = True
+            table = Table("Grupo", "ID", "URL", title="Arquivos a baixar (dry-run)")
+            for e in entries:
+                table.add_row(e.get("group", ""), e.get("id", ""), e.get("url", ""))
+            console.print(table)
+            console.print(f"\n[bold]{len(entries)}[/bold] arquivo(s) listado(s).")
+            recorder.succeeded = 0
+            recorder.errors = []
+            return
+
+        if force:
+            downloaded, total, errors = self.download_datasets(
+                entries, actual_output, workers=workers, force=True
+            )
+        else:
+            downloaded, total, errors = self.download_datasets(
+                entries, actual_output, workers=workers
+            )
+        recorder.total, recorder.succeeded, recorder.errors = total, downloaded, errors
+
+        console.print(
+            f"\n[green]Concluído:[/green] {downloaded}/{total} arquivo(s) baixado(s)."
+        )
+        if errors:
+            console.print(f"[red]{len(errors)} erro(s):[/red]")
+            for eid, emsg in errors:
+                console.print(f"  {eid}: {emsg}")
+            # Erros nunca saem como sucesso: parcial (3) se algo baixou,
+            # falha total (1) se nada baixou.
+            raise typer.Exit(EXIT_SYNC_PARTIAL if downloaded > 0 else 1)
+
     def _build_commands(self) -> None:
         console = get_console()
 
@@ -1775,62 +1884,35 @@ class FetcherApp:
             verbose: Annotated[
                 bool, typer.Option("--verbose", help="Logs detalhados")
             ] = False,
+            summary_json: Annotated[
+                Path | None,
+                typer.Option(
+                    "--summary-json",
+                    help="Grava neste arquivo (atômico) um resumo JSON da "
+                    "execução: contadores, bytes, erros e código de saída "
+                    f"(esquema versão {SUMMARY_SCHEMA_VERSION}). Não altera o "
+                    "código de saída do comando.",
+                ),
+            ] = None,
         ) -> None:
             setup_rich_logging(verbose, console=console)
             actual_output = output or self.default_output
-
-            if from_plan is not None:
-                try:
-                    plan = CheckPlan.from_json(from_plan.read_text(encoding="utf-8"))
-                except (OSError, ValueError) as exc:
-                    console.print(f"[red]Plano inválido: {exc}[/red]")
-                    raise typer.Exit(1) from None
-                entries = [
-                    self.entry_from_plan(dict(item.entry))
-                    for item in plan.items
-                    if item.action == "download"
-                ]
-                console.print(
-                    f"[dim]Plano {from_plan}: {len(entries)} entrada(s) "
-                    f"com ação 'download' de {len(plan.items)} verificada(s).[/dim]"
+            with SummaryRecorder(
+                summary_json,
+                fetcher=self.name,
+                command="sync",
+                stats_source=lambda: self.last_download_stats,
+            ) as recorder:
+                self.last_download_stats = None
+                self._run_sync(
+                    recorder,
+                    groups=groups,
+                    output=actual_output,
+                    dry_run=dry_run,
+                    workers=workers,
+                    from_plan=from_plan,
+                    force=force,
                 )
-            else:
-                try:
-                    target_groups = self.resolve_groups(groups)
-                except ValueError as exc:
-                    console.print(f"[red]{exc}[/red]")
-                    console.print(f"Grupos válidos: {', '.join(self.all_keys)}")
-                    raise typer.Exit(1) from None
-
-                entries = [e for g in target_groups for e in self.list_datasets(g)]
-
-            if dry_run:
-                table = Table("Grupo", "ID", "URL", title="Arquivos a baixar (dry-run)")
-                for e in entries:
-                    table.add_row(e.get("group", ""), e.get("id", ""), e.get("url", ""))
-                console.print(table)
-                console.print(f"\n[bold]{len(entries)}[/bold] arquivo(s) listado(s).")
-                return
-
-            if force:
-                downloaded, total, errors = self.download_datasets(
-                    entries, actual_output, workers=workers, force=True
-                )
-            else:
-                downloaded, total, errors = self.download_datasets(
-                    entries, actual_output, workers=workers
-                )
-
-            console.print(
-                f"\n[green]Concluído:[/green] {downloaded}/{total} arquivo(s) baixado(s)."
-            )
-            if errors:
-                console.print(f"[red]{len(errors)} erro(s):[/red]")
-                for eid, emsg in errors:
-                    console.print(f"  {eid}: {emsg}")
-                # Erros nunca saem como sucesso: parcial (3) se algo baixou,
-                # falha total (1) se nada baixou.
-                raise typer.Exit(EXIT_SYNC_PARTIAL if downloaded > 0 else 1)
 
         @self.app.command("check")
         def check(

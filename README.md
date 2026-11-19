@@ -25,6 +25,36 @@ quantilica inmet sync 2020 2021
 quantilica td sync --dataset prices
 ```
 
+### Resumo da coleta em JSON
+
+`sync --summary-json ARQUIVO` grava, ao terminar, um JSON com os contadores que o
+comando também imprime na linha `Concluído: X/Y arquivo(s) baixado(s)`, para quem
+precisa deles sem ler texto (um agendador, um painel, um teste):
+
+```bash
+quantilica comex sync 2024 --summary-json resumo.json
+```
+
+```json
+{
+  "schema_version": 1,
+  "fetcher": "comex-fetcher",
+  "command": "sync",
+  "status": "partial",
+  "exit_code": 3,
+  "total": 12, "succeeded": 11, "failed": 1,
+  "downloaded": 4, "skipped": 7, "bytes_downloaded": 52428800,
+  "errors": [{"id": "exp-2024", "message": "HTTP 503"}]
+}
+```
+
+`succeeded` é o numerador de `Concluído` (inclui o que já estava em dia);
+`downloaded`, `skipped` e `bytes_downloaded` separam o que foi transferido de fato,
+e são `null` quando o fetcher baixa por código próprio. O arquivo é gravado de forma
+atômica, também quando o comando falha (com o motivo em `error`), e a opção nunca muda
+o código de saída. `pipeline --summary-json` repassa a opção ao passo de download.
+O contrato completo está no docstring de `quantilica.cli.summary`.
+
 ## Lake
 
 `quantilica lake` monta e audita o lake de Parquet a partir de um bruto local, sem
