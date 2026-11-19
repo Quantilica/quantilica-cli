@@ -10,6 +10,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -30,33 +31,32 @@ def exception_record(path: str, **extra: Any) -> dict[str, Any]:
     } | extra
 
 
+def hours_ago(hours: float) -> str:
+    moment = datetime.now(UTC) - timedelta(hours=hours)
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def write_ledger_snapshot(
     destination: Path,
     exceptions: list[dict[str, Any]] | None,
     *,
+    generated_at: str | None = None,
     header_extra: dict[str, Any] | None = None,
 ) -> Path:
-    """``exceptions=None`` escreve um retrato sem o campo (exportador anterior)."""
-    body = [
-        _dumps(
-            {
-                "kind": "version",
-                "path": "a/d/x.csv",
-                "sha256": "a" * 64,
-                "source_id": "a",
-                "gdrive_path": None,
-            }
-        )
-    ]
+    """Retrato só com o cabeçalho (o leitor das exceções não lê o corpo).
+
+    ``exceptions=None`` escreve um retrato sem o campo (exportador anterior);
+    ``generated_at`` padrão é uma hora atrás.
+    """
     header: dict[str, Any] = {
         "kind": "header",
         "format": "quantilica-ingest-ledger",
         "format_version": 2,
-        "generated_at": "2026-11-19T12:00:00Z",
-        "versions": 1,
+        "generated_at": generated_at or hours_ago(1),
+        "versions": 0,
         "exclusions": 0,
-        "source_counts": {"a": 1},
-        "body_sha256": hashlib.sha256(b"".join(body)).hexdigest(),
+        "source_counts": {},
+        "body_sha256": hashlib.sha256(b"").hexdigest(),
     }
     if exceptions is not None:
         digest = hashlib.sha256()
@@ -71,5 +71,4 @@ def write_ledger_snapshot(
     destination.parent.mkdir(parents=True, exist_ok=True)
     with gzip.open(destination, "wb") as stream:
         stream.write(_dumps(header))
-        stream.write(b"".join(body))
     return destination

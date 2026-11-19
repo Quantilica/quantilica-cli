@@ -11,6 +11,7 @@ de modo que ``--help`` funciona sem ele.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from collections.abc import Iterator
@@ -24,6 +25,9 @@ from rich.console import Console
 from rich.logging import RichHandler
 from rich.markup import escape
 
+from quantilica.cli.ledger_exceptions import (
+    DEFAULT_MAX_AGE_HOURS as DEFAULT_EXCEPTIONS_MAX_AGE_HOURS,
+)
 from quantilica.cli.ledger_exceptions import (
     LedgerExceptionsError,
     read_ledger_exceptions,
@@ -97,14 +101,22 @@ def _read_list(path: Path) -> list[str]:
     return items
 
 
-def _collect_exceptions(exceptions: Path | None, from_ledger: Path | None) -> list[str]:
-    """União das exceções do arquivo texto e do retrato do ledger, sem repetição."""
+def _collect_exceptions(
+    exceptions: Path | None, from_ledger: Path | None, max_age_hours: float
+) -> tuple[list[str], dict[str, Any] | None]:
+    """União das exceções do arquivo texto e do retrato do ledger, sem repetição.
+
+    Devolve também a origem das exceções do retrato (``None`` sem retrato), que vai
+    para o relatório JSON da auditoria.
+    """
     known = _read_list(exceptions) if exceptions is not None else []
+    origin: dict[str, Any] | None = None
     if from_ledger is not None:
         try:
-            snapshot = read_ledger_exceptions(from_ledger)
+            snapshot = read_ledger_exceptions(from_ledger, max_age_hours=max_age_hours)
         except LedgerExceptionsError as exc:
             raise _fail(str(exc)) from exc
+        origin = snapshot.summary()
         if not snapshot.declared:
             err_console.print(
                 f"[yellow]Aviso:[/yellow] o retrato {escape(str(snapshot.path))} "
@@ -123,7 +135,17 @@ def _collect_exceptions(exceptions: Path | None, from_ledger: Path | None) -> li
                 highlight=False,
             )
         known.extend(snapshot.paths)
-    return list(dict.fromkeys(known))
+    return list(dict.fromkeys(known)), origin
+
+
+def _report_json(report: Any, origin: dict[str, Any] | None) -> str:
+    """JSON do relatório; com retrato de exceções, acrescenta a chave de origem."""
+    text = report.to_json()
+    if origin is None:
+        return text
+    data = json.loads(text)
+    data["excecoes_do_ledger"] = origin
+    return json.dumps(data, ensure_ascii=False, indent=2)
 
 
 @contextmanager
@@ -431,6 +453,15 @@ def audit(
             exists=True,
         ),
     ] = None,
+    exceptions_max_age_hours: Annotated[
+        float,
+        typer.Option(
+            "--exceptions-max-age-hours",
+            min=0.01,
+            help="Idade máxima, em horas, do retrato de --exceptions-from-ledger "
+            "(pelo generated_at dele); mais velho que isso é erro",
+        ),
+    ] = DEFAULT_EXCEPTIONS_MAX_AGE_HOURS,
     rehash: Annotated[
         bool,
         typer.Option(
@@ -514,7 +545,9 @@ def audit(
         raise _missing_analytics("audit", exc) from None
 
     wanted = _split_sources(sources)
-    known = _collect_exceptions(exceptions, exceptions_from_ledger)
+    known, exceptions_origin = _collect_exceptions(
+        exceptions, exceptions_from_ledger, exceptions_max_age_hours
+    )
     # Só o que foi pedido: a auditoria comum segue valendo com um analytics anterior.
     publicacao: dict[str, Any] = {}
     if read_only:
@@ -555,10 +588,14 @@ def audit(
 
     if json_file is not None:
         try:
-            json_file.write_text(report.to_json() + "\n", encoding="utf-8")
+            json_file.write_text(
+                _report_json(report, exceptions_origin) + "\n", encoding="utf-8"
+            )
         except OSError as exc:
             raise _fail(f"não consegui gravar {json_file}: {exc}") from exc
         err_console.print(f"Relatório JSON em [dim]{json_file}[/dim]", highlight=False)
-    typer.echo(report.to_json() if json_stdout else report.to_text())
+    typer.echo(
+        _report_json(report, exceptions_origin) if json_stdout else report.to_text()
+    )
     if not report.ok:
         raise typer.Exit(EXIT_FAILURE)

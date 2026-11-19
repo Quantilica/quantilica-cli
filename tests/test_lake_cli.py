@@ -345,6 +345,75 @@ def test_audit_exceptions_from_ledger_expired_do_not_silence(corpus, tmp_path) -
     assert result.exit_code == 1
 
 
+def test_audit_exceptions_from_ledger_old_snapshot_fails_unless_allowed(
+    corpus, tmp_path
+) -> None:
+    from tests.ledger_snapshots import (
+        exception_record,
+        hours_ago,
+        write_ledger_snapshot,
+    )
+
+    snapshot = write_ledger_snapshot(
+        tmp_path / "velho.jsonl.gz",
+        [exception_record("*")],
+        generated_at=hours_ago(72),
+    )
+    result = runner.invoke(
+        app, _audit_args(corpus, "--exceptions-from-ledger", str(snapshot))
+    )
+    assert result.exit_code == 1
+    assert "velho demais" in _plain(result.output)
+    result = runner.invoke(
+        app,
+        _audit_args(
+            corpus,
+            "--exceptions-from-ledger", str(snapshot),
+            "--exceptions-max-age-hours", "100",
+        ),
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+
+
+def test_audit_json_file_records_the_origin_of_the_exceptions(corpus, tmp_path) -> None:
+    from tests.ledger_snapshots import exception_record, write_ledger_snapshot
+
+    snapshot = write_ledger_snapshot(
+        tmp_path / "r.jsonl.gz",
+        [
+            exception_record("alfa/*"),
+            exception_record("beta/*", expira_em="2020-01-01T00:00:00Z"),
+        ],
+        generated_at="2026-11-19T12:00:00Z",
+    )
+    target = tmp_path / "relatorio.json"
+    result = runner.invoke(
+        app,
+        _audit_args(
+            corpus,
+            "--exceptions-from-ledger", str(snapshot),
+            "--exceptions-max-age-hours", "100000",
+            "--json-file", str(target),
+        ),
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    origin = json.loads(target.read_text(encoding="utf-8"))["excecoes_do_ledger"]
+    assert origin == {
+        "retrato": str(snapshot),
+        "generated_at": "2026-11-19T12:00:00Z",
+        "declaradas": True,
+        "vigentes": 1,
+        "expiradas": 1,
+    }
+    # sem retrato, o relatório não ganha a chave
+    plain = tmp_path / "sem.json"
+    assert (
+        runner.invoke(app, _audit_args(corpus, "--json-file", str(plain))).exit_code
+        == 0
+    )
+    assert "excecoes_do_ledger" not in json.loads(plain.read_text(encoding="utf-8"))
+
+
 def test_audit_exceptions_from_ledger_without_the_field_warns(corpus, tmp_path) -> None:
     from tests.ledger_snapshots import write_ledger_snapshot
 

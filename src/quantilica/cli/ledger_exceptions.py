@@ -20,14 +20,18 @@ import hashlib
 import json
 import zlib
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 FORMAT_NAME = "quantilica-ingest-ledger"
 SUPPORTED_FORMAT_VERSIONS = (2,)
 LATEST_NAME = "ledger-vigente-latest.jsonl.gz"
 _HEADER_MAX_BYTES = 1 << 20
+#: idade máxima padrão do retrato, em horas (a mesma do lake-sync)
+DEFAULT_MAX_AGE_HOURS = 48.0
+# Tolerância ao relógio de quem gerou o retrato adiantado em relação ao de quem lê.
+_FUTURE_TOLERANCE = timedelta(minutes=15)
 
 
 class LedgerExceptionsError(ValueError):
@@ -45,6 +49,16 @@ class LedgerExceptions:
     paths: tuple[str, ...]
     #: expiradas no momento da leitura (já fora de ``paths``)
     expired: int = 0
+
+    def summary(self) -> dict[str, Any]:
+        """Origem das exceções, para o relatório JSON da auditoria."""
+        return {
+            "retrato": str(self.path),
+            "generated_at": self.generated_at,
+            "declaradas": self.declared,
+            "vigentes": len(self.paths),
+            "expiradas": self.expired,
+        }
 
 
 def resolve_snapshot(path: Path) -> Path:
@@ -93,6 +107,23 @@ def _read_header(target: Path) -> dict[str, Any]:
     return header
 
 
+def _safe_path(value: Any, where: str) -> str:
+    """Caminho relativo com `/`; recusa vazio, absoluto, letra de unidade e `..`."""
+    if not isinstance(value, str):
+        raise LedgerExceptionsError(f"{where}: path ausente")
+    text = value.strip().replace("\\", "/")
+    path = PurePosixPath(text)
+    if (
+        not text
+        or "\0" in text
+        or path.is_absolute()
+        or any(part == ".." for part in path.parts)
+        or path.parts[0].endswith(":")
+    ):
+        raise LedgerExceptionsError(f"{where}: caminho inválido: {value!r}")
+    return path.as_posix()
+
+
 def _parse_expiry(value: Any, where: str) -> datetime | None:
     if value is None:
         return None
@@ -107,19 +138,57 @@ def _parse_expiry(value: Any, where: str) -> datetime | None:
     return moment.astimezone(UTC)
 
 
+def _parse_generated(value: Any, target: Path) -> datetime:
+    if not isinstance(value, str):
+        raise LedgerExceptionsError(f"{target}: generated_at ausente")
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise LedgerExceptionsError(
+            f"{target}: generated_at inválido: {value!r}"
+        ) from exc
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC)
+
+
 def read_ledger_exceptions(
-    path: Path, *, now: datetime | None = None
+    path: Path,
+    *,
+    now: datetime | None = None,
+    max_age_hours: float | None = DEFAULT_MAX_AGE_HOURS,
 ) -> LedgerExceptions:
     """Caminhos de exceção vigentes do retrato (arquivo, ou pasta com o ``latest``).
 
     Confere contagem e sha256 da lista (o ``body_sha256`` do retrato não cobre o
     cabeçalho) e descarta as que já expiraram em ``now``. Retrato sem o campo devolve
     ``declared=False`` e nenhuma exceção.
+
+    A idade vem do ``generated_at`` do cabeçalho: retrato mais velho que
+    ``max_age_hours`` (``None`` desliga) é erro, porque uma exceção removida depois
+    dele ainda apareceria, e uma nova não. Cada caminho é relativo e sem ``..``, e
+    não se repete.
     """
+    if max_age_hours is not None and not max_age_hours > 0:
+        raise ValueError("max_age_hours deve ser positivo")
     target = resolve_snapshot(path)
     header = _read_header(target)
-    generated = header.get("generated_at")
-    generated_at = generated if isinstance(generated, str) else None
+    generated_at = header.get("generated_at")
+    moment = _parse_generated(generated_at, target)
+    current = (now or datetime.now(UTC)).astimezone(UTC)
+    if moment - current > _FUTURE_TOLERANCE:
+        raise LedgerExceptionsError(
+            f"{target}: gerado no futuro ({generated_at}); relógio fora de ajuste"
+        )
+    if max_age_hours is not None:
+        age = (current - moment).total_seconds() / 3600
+        if age > max_age_hours:
+            raise LedgerExceptionsError(
+                f"{target}: retrato velho demais: {age:.1f} h, limite "
+                f"{max_age_hours:g} h (gerado em {generated_at}); uma exceção "
+                "removida desde então ainda valeria. Gere um retrato novo ou "
+                "aumente --exceptions-max-age-hours"
+            )
     if "lake_exceptions" not in header:
         return LedgerExceptions(target, generated_at, declared=False, paths=())
 
@@ -137,18 +206,19 @@ def read_ledger_exceptions(
     if digest.hexdigest() != str(header.get("lake_exceptions_sha256") or "").lower():
         raise LedgerExceptionsError(f"{label}: sha256 não confere; arquivo corrompido")
 
-    current = (now or datetime.now(UTC)).astimezone(UTC)
     paths: list[str] = []
+    seen: set[str] = set()
     expired = 0
     for number, record in enumerate(records, start=1):
-        value = record.get("path")
-        if not isinstance(value, str) or not value.strip():
-            raise LedgerExceptionsError(f"{label}[{number}]: path ausente")
+        value = _safe_path(record.get("path"), f"{label}[{number}]")
+        if value in seen:
+            raise LedgerExceptionsError(f"{label}[{number}]: caminho repetido: {value}")
+        seen.add(value)
         expiry = _parse_expiry(record.get("expira_em"), f"{label}[{number}]")
         if expiry is not None and expiry <= current:
             expired += 1
             continue
-        paths.append(value.strip())
+        paths.append(value)
     return LedgerExceptions(
         target, generated_at, declared=True, paths=tuple(paths), expired=expired
     )
