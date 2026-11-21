@@ -104,7 +104,9 @@ def _default_lake_dir() -> Path:
         if env:
             p = Path(env).expanduser().resolve()
             return p / "lake" if (p / "lake").is_dir() else p
-        return Path("~/data/lake").expanduser().resolve()
+        xdg = os.environ.get("XDG_DATA_HOME")
+        base = Path(xdg).expanduser() if xdg else Path.home() / ".local" / "share"
+        return (base / "quantilica" / "lake").resolve()
 
 
 #: Registro: id canônico, apelido (e id de lake) -> ``FetcherInfo``.

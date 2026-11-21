@@ -7,6 +7,10 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+### Alterado
+
+- O fallback do diretório do lake (`_default_lake_dir`) deixa de usar `~/data/lake` e passa a usar `$XDG_DATA_HOME/quantilica/lake` (ou `~/.local/share/quantilica/lake`), igual ao `quantilica.core.lake.lake_root()`. `QUANTILICA_LAKE_DIR` e `QUANTILICA_DATA_DIR` continuam tendo precedência.
+
 ## [0.27.0] - 2026-11-19
 
 ### Adicionado
