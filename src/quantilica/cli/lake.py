@@ -11,27 +11,17 @@ de modo que ``--help`` funciona sem ele.
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated
 
 import typer
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.markup import escape
-
-from quantilica.cli.ledger_exceptions import (
-    DEFAULT_MAX_AGE_HOURS as DEFAULT_EXCEPTIONS_MAX_AGE_HOURS,
-)
-from quantilica.cli.ledger_exceptions import (
-    LedgerExceptionsError,
-    read_ledger_exceptions,
-)
 
 app = typer.Typer(
     help="Montar e auditar o lake: bruto local → select → build → audit.",
@@ -82,11 +72,6 @@ def _split_sources(value: str | None) -> list[str] | None:
     return sources
 
 
-def _is_inside(path: Path, folder: Path) -> bool:
-    """Se ``path`` (existente ou não) fica dentro de ``folder``, links resolvidos."""
-    return Path(os.path.realpath(path)).is_relative_to(os.path.realpath(folder))
-
-
 def _read_list(path: Path) -> list[str]:
     """Lê um arquivo texto com um item por linha (vazias e ``#`` ignoradas)."""
     try:
@@ -99,53 +84,6 @@ def _read_list(path: Path) -> list[str]:
         if line and not line.startswith("#"):
             items.append(line)
     return items
-
-
-def _collect_exceptions(
-    exceptions: Path | None, from_ledger: Path | None, max_age_hours: float
-) -> tuple[list[str], dict[str, Any] | None]:
-    """União das exceções do arquivo texto e do retrato do ledger, sem repetição.
-
-    Devolve também a origem das exceções do retrato (``None`` sem retrato), que vai
-    para o relatório JSON da auditoria.
-    """
-    known = _read_list(exceptions) if exceptions is not None else []
-    origin: dict[str, Any] | None = None
-    if from_ledger is not None:
-        try:
-            snapshot = read_ledger_exceptions(from_ledger, max_age_hours=max_age_hours)
-        except LedgerExceptionsError as exc:
-            raise _fail(str(exc)) from exc
-        origin = snapshot.summary()
-        if not snapshot.declared:
-            err_console.print(
-                f"[yellow]Aviso:[/yellow] o retrato {escape(str(snapshot.path))} "
-                "não traz exceções da auditoria (gerado por uma versão anterior).",
-                highlight=False,
-            )
-        else:
-            note = (
-                f", {snapshot.expired} expirada(s) ignorada(s)"
-                if snapshot.expired
-                else ""
-            )
-            err_console.print(
-                f"Exceções do retrato do ledger: {len(snapshot.paths)}{note} "
-                f"(gerado em {snapshot.generated_at or '?'})",
-                highlight=False,
-            )
-        known.extend(snapshot.paths)
-    return list(dict.fromkeys(known)), origin
-
-
-def _report_json(report: Any, origin: dict[str, Any] | None) -> str:
-    """JSON do relatório; com retrato de exceções, acrescenta a chave de origem."""
-    text = report.to_json()
-    if origin is None:
-        return text
-    data = json.loads(text)
-    data["excecoes_do_ledger"] = origin
-    return json.dumps(data, ensure_ascii=False, indent=2)
 
 
 @contextmanager
@@ -443,25 +381,6 @@ def audit(
             dir_okay=False,
         ),
     ] = None,
-    exceptions_from_ledger: Annotated[
-        Path | None,
-        typer.Option(
-            "--exceptions-from-ledger",
-            help="Retrato do ledger (ledger-vigente-*.jsonl.gz, ou a pasta com o "
-            "ledger-vigente-latest) de onde ler as exceções vigentes da auditoria; "
-            "vale a união com --exceptions",
-            exists=True,
-        ),
-    ] = None,
-    exceptions_max_age_hours: Annotated[
-        float,
-        typer.Option(
-            "--exceptions-max-age-hours",
-            min=0.01,
-            help="Idade máxima, em horas, do retrato de --exceptions-from-ledger "
-            "(pelo generated_at dele); mais velho que isso é erro",
-        ),
-    ] = DEFAULT_EXCEPTIONS_MAX_AGE_HOURS,
     rehash: Annotated[
         bool,
         typer.Option(
@@ -488,54 +407,8 @@ def audit(
             dir_okay=False,
         ),
     ] = None,
-    read_only: Annotated[
-        bool,
-        typer.Option(
-            "--somente-leitura",
-            help="Não escreve nada no lake (para um lake montado só para "
-            "leitura): fonte com _em-atualizacao.json fica 'em atualização' e "
-            "não reprova; fonte sem _build.json fica 'incompleta'",
-        ),
-    ] = False,
-    state: Annotated[
-        Path | None,
-        typer.Option(
-            "--estado",
-            help="Arquivo JSON (fora do lake) que recebe, por fonte, o build_id "
-            "auditado, o resultado (publicado, em_atualizacao, incompleto, "
-            "falhou) e a data; é o que os comandos de leitura consultam",
-            dir_okay=False,
-        ),
-    ] = None,
-    clear_marker: Annotated[
-        bool,
-        typer.Option(
-            "--limpar-marcador",
-            help="Remove o _em-atualizacao.json das fontes publicadas (única "
-            "escrita que a auditoria faz no lake; não vale com --somente-leitura)",
-        ),
-    ] = False,
 ) -> None:
     """Audita o lake; sai com 0 se aprovado e com 1 se houver achados."""
-    if state is not None and not read_only:
-        raise _fail(
-            "--estado só vale com --somente-leitura: o estado descreve o que a "
-            "máquina que lê enxerga, e a que constrói não o grava.",
-            EXIT_USAGE,
-        )
-    if read_only and clear_marker:
-        raise _fail(
-            "--limpar-marcador escreve no lake e não vale com --somente-leitura.",
-            EXIT_USAGE,
-        )
-    if read_only:
-        for flag, target in (("--estado", state), ("--json-file", json_file)):
-            if target is not None and _is_inside(target, lake):
-                raise _fail(
-                    f"{flag} aponta para dentro do lake ({target}); com "
-                    "--somente-leitura nada pode ser gravado ali.",
-                    EXIT_USAGE,
-                )
     try:
         # extra opcional `lake`: ausente do ambiente de dev padrão
         from quantilica.analytics.lake_audit import (  # pyright: ignore[reportMissingImports]
@@ -545,17 +418,7 @@ def audit(
         raise _missing_analytics("audit", exc) from None
 
     wanted = _split_sources(sources)
-    known, exceptions_origin = _collect_exceptions(
-        exceptions, exceptions_from_ledger, exceptions_max_age_hours
-    )
-    # Só o que foi pedido: a auditoria comum segue valendo com um analytics anterior.
-    publicacao: dict[str, Any] = {}
-    if read_only:
-        publicacao["read_only"] = True
-    if clear_marker:
-        publicacao["clear_marker"] = True
-    if state is not None:
-        publicacao["state"] = state
+    known = _read_list(exceptions) if exceptions is not None else []
     try:
         with _log_to_stderr():
             report = lake_audit(
@@ -568,34 +431,19 @@ def audit(
                 known_exceptions=known,
                 rehash=rehash,
                 workers=workers,
-                **publicacao,
             )
     except KeyboardInterrupt:
         err_console.print("[yellow]Interrompido.[/yellow]")
         raise typer.Exit(EXIT_INTERRUPTED) from None
-    except TypeError as exc:
-        # Um quantilica-analytics anterior não conhece as opções novas.
-        if publicacao and any(f"'{k}'" in str(exc) for k in publicacao):
-            raise _fail(
-                "o quantilica-analytics instalado não conhece "
-                "--somente-leitura/--estado/--limpar-marcador. Atualize-o: "
-                f"{ANALYTICS_HINT}",
-                EXIT_USAGE,
-            ) from None
-        raise
     except (OSError, ValueError) as exc:
         raise _fail(str(exc)) from exc
 
     if json_file is not None:
         try:
-            json_file.write_text(
-                _report_json(report, exceptions_origin) + "\n", encoding="utf-8"
-            )
+            json_file.write_text(report.to_json() + "\n", encoding="utf-8")
         except OSError as exc:
             raise _fail(f"não consegui gravar {json_file}: {exc}") from exc
         err_console.print(f"Relatório JSON em [dim]{json_file}[/dim]", highlight=False)
-    typer.echo(
-        _report_json(report, exceptions_origin) if json_stdout else report.to_text()
-    )
+    typer.echo(report.to_json() if json_stdout else report.to_text())
     if not report.ok:
         raise typer.Exit(EXIT_FAILURE)

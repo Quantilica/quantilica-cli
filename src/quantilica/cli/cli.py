@@ -14,7 +14,6 @@ from rich.logging import RichHandler
 from rich.table import Table
 
 from quantilica.cli import __version__
-from quantilica.cli.catalog import app as catalog_app
 from quantilica.cli.docs import app as docs_app
 from quantilica.cli.health import cmd_health
 from quantilica.cli.lake import app as lake_app
@@ -39,7 +38,6 @@ app = typer.Typer(
     help="Quantilica — ferramentas de dados abertos brasileiros.",
     no_args_is_help=True,
 )
-app.add_typer(catalog_app, name="catalog")
 app.add_typer(docs_app, name="docs")
 app.add_typer(lake_app, name="lake")
 app.add_typer(manifests_app, name="manifests")
@@ -146,7 +144,7 @@ def _register_plugins() -> None:
     # Fetchers e comandos ficam na raiz: `quantilica <nome>`.
     commands = _load_plugins(COMMAND_GROUP)
     reserved = {
-        "catalog", "docs", "lake", "manifests", "registry", "sources",
+        "docs", "lake", "manifests", "registry", "sources",
         "install", "uninstall", "doctor", "health", "list-sources",
     } | set(commands)  # fmt: skip
     _mount_fetchers(_load_plugins(FETCHER_GROUP), reserved)

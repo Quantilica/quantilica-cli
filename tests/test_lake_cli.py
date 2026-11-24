@@ -263,176 +263,25 @@ def test_audit_exceptions_file_silences_known_missing_parquet(corpus, tmp_path) 
     assert result.exit_code == 0, result.output
 
 
-def test_audit_help_lists_exceptions_from_ledger() -> None:
-    result = runner.invoke(
-        app,
-        ["lake", "audit", "--help"],
-        env={"COLUMNS": "200", "TERMINAL_WIDTH": "200"},
-    )
+def test_audit_help_has_only_the_public_options() -> None:
+    result = runner.invoke(app, ["lake", "audit", "--help"], terminal_width=200)
     assert result.exit_code == 0
-    assert "--exceptions-from-ledger" in _plain(result.output)
+    text = _plain(result.output)
+    for removed in (
+        "--somente-leitura",
+        "--estado",
+        "--limpar-marcador",
+        "--exceptions-from-ledger",
+        "--exceptions-max-age-hours",
+    ):
+        assert removed not in text
 
 
-def _audit_args(corpus, *extra: str) -> list[str]:
-    return [
-        "lake", "audit", "--lake", str(corpus.lake), "--input", str(corpus.view), *extra,
-    ]  # fmt: skip
-
-
-def test_audit_exceptions_from_ledger_silence_known_missing_parquet(
-    corpus, tmp_path
-) -> None:
-    from tests.ledger_snapshots import exception_record, write_ledger_snapshot
-
-    corpus.lake_parquets()[-1].unlink()
-    # sem as exceções o lake reprova
-    assert runner.invoke(app, _audit_args(corpus)).exit_code == 1
-    snapshot = write_ledger_snapshot(
-        tmp_path / "ledger-vigente-latest.jsonl.gz", [exception_record("*")]
-    )
+def test_audit_removed_option_is_a_usage_error(corpus) -> None:
     result = runner.invoke(
-        app, _audit_args(corpus, "--exceptions-from-ledger", str(snapshot))
+        app, ["lake", "audit", "--lake", str(corpus.lake), "--somente-leitura"]
     )
-    assert result.exit_code == 0, result.output
-    assert "Exceções do retrato do ledger: 1" in _plain(result.output)
-    # a pasta vale pelo ledger-vigente-latest
-    result = runner.invoke(
-        app, _audit_args(corpus, "--exceptions-from-ledger", str(tmp_path))
-    )
-    assert result.exit_code == 0, result.output
-
-
-def test_audit_exceptions_from_ledger_and_file_are_united(corpus, tmp_path) -> None:
-    from tests.ledger_snapshots import exception_record, write_ledger_snapshot
-
-    parquets = corpus.lake_parquets()  # ordenados: alfa primeiro, beta por último
-    parquets[0].unlink()
-    parquets[-1].unlink()
-    # nenhuma das duas fontes cobre sozinha; a união cobre
-    snapshot = write_ledger_snapshot(
-        tmp_path / "r.jsonl.gz", [exception_record("beta/*")]
-    )
-    arquivo = tmp_path / "excecoes.txt"
-    arquivo.write_text("alfa/*\n", encoding="utf-8")
-    both = runner.invoke(
-        app,
-        _audit_args(
-            corpus,
-            "--exceptions-from-ledger", str(snapshot),
-            "--exceptions", str(arquivo),
-        ),
-    )  # fmt: skip
-    assert both.exit_code == 0, both.output
-    only_ledger = runner.invoke(
-        app, _audit_args(corpus, "--exceptions-from-ledger", str(snapshot))
-    )
-    only_file = runner.invoke(app, _audit_args(corpus, "--exceptions", str(arquivo)))
-    assert only_ledger.exit_code == 1
-    assert only_file.exit_code == 1
-
-
-def test_audit_exceptions_from_ledger_expired_do_not_silence(corpus, tmp_path) -> None:
-    from tests.ledger_snapshots import exception_record, write_ledger_snapshot
-
-    corpus.lake_parquets()[-1].unlink()
-    snapshot = write_ledger_snapshot(
-        tmp_path / "r.jsonl.gz",
-        [exception_record("*", expira_em="2020-01-01T00:00:00Z")],
-    )
-    result = runner.invoke(
-        app, _audit_args(corpus, "--exceptions-from-ledger", str(snapshot))
-    )
-    assert result.exit_code == 1
-
-
-def test_audit_exceptions_from_ledger_old_snapshot_fails_unless_allowed(
-    corpus, tmp_path
-) -> None:
-    from tests.ledger_snapshots import (
-        exception_record,
-        hours_ago,
-        write_ledger_snapshot,
-    )
-
-    snapshot = write_ledger_snapshot(
-        tmp_path / "velho.jsonl.gz",
-        [exception_record("*")],
-        generated_at=hours_ago(72),
-    )
-    result = runner.invoke(
-        app, _audit_args(corpus, "--exceptions-from-ledger", str(snapshot))
-    )
-    assert result.exit_code == 1
-    assert "velho demais" in _plain(result.output)
-    result = runner.invoke(
-        app,
-        _audit_args(
-            corpus,
-            "--exceptions-from-ledger", str(snapshot),
-            "--exceptions-max-age-hours", "100",
-        ),
-    )  # fmt: skip
-    assert result.exit_code == 0, result.output
-
-
-def test_audit_json_file_records_the_origin_of_the_exceptions(corpus, tmp_path) -> None:
-    from tests.ledger_snapshots import exception_record, write_ledger_snapshot
-
-    snapshot = write_ledger_snapshot(
-        tmp_path / "r.jsonl.gz",
-        [
-            exception_record("alfa/*"),
-            exception_record("beta/*", expira_em="2020-01-01T00:00:00Z"),
-        ],
-        generated_at="2026-11-19T12:00:00Z",
-    )
-    target = tmp_path / "relatorio.json"
-    result = runner.invoke(
-        app,
-        _audit_args(
-            corpus,
-            "--exceptions-from-ledger", str(snapshot),
-            "--exceptions-max-age-hours", "100000",
-            "--json-file", str(target),
-        ),
-    )  # fmt: skip
-    assert result.exit_code == 0, result.output
-    origin = json.loads(target.read_text(encoding="utf-8"))["excecoes_do_ledger"]
-    assert origin == {
-        "retrato": str(snapshot),
-        "generated_at": "2026-11-19T12:00:00Z",
-        "declaradas": True,
-        "vigentes": 1,
-        "expiradas": 1,
-    }
-    # sem retrato, o relatório não ganha a chave
-    plain = tmp_path / "sem.json"
-    assert (
-        runner.invoke(app, _audit_args(corpus, "--json-file", str(plain))).exit_code
-        == 0
-    )
-    assert "excecoes_do_ledger" not in json.loads(plain.read_text(encoding="utf-8"))
-
-
-def test_audit_exceptions_from_ledger_without_the_field_warns(corpus, tmp_path) -> None:
-    from tests.ledger_snapshots import write_ledger_snapshot
-
-    snapshot = write_ledger_snapshot(tmp_path / "antigo.jsonl.gz", None)
-    result = runner.invoke(
-        app, _audit_args(corpus, "--exceptions-from-ledger", str(snapshot))
-    )
-    assert result.exit_code == 0, result.output
-    assert "não traz exceções" in _plain(result.output)
-
-
-def test_audit_exceptions_from_ledger_corrupted_is_an_error(corpus, tmp_path) -> None:
-    snapshot = tmp_path / "quebrado.jsonl.gz"
-    snapshot.write_bytes(b"nao e gzip")
-    result = runner.invoke(
-        app, _audit_args(corpus, "--exceptions-from-ledger", str(snapshot))
-    )
-    assert result.exit_code == 1
-    assert "gzip" in _plain(result.output)
+    assert result.exit_code == 2
 
 
 def test_audit_missing_lake_is_a_usage_error(tmp_path: Path) -> None:

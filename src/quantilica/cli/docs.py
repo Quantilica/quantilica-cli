@@ -27,8 +27,6 @@ import typer
 from rich.console import Console
 from rich.markup import escape
 
-from quantilica.cli.lake_estado import ESTADO_ENV, EstadoInvalido, PoliticaDePublicacao
-
 app = typer.Typer(
     help="Documentação dos dados dos fetchers: verificar, gerar esquemas e fichas.",
     no_args_is_help=True,
@@ -202,31 +200,12 @@ def schema(
             help="Dataset a atualizar (repetível); padrão: todos os da fonte no lake",
         ),
     ] = None,
-    estado: Annotated[
-        Path | None,
-        typer.Option(
-            "--estado",
-            envvar=ESTADO_ENV,
-            help="Arquivo de estado gravado por 'lake audit --somente-leitura "
-            "--estado': a fonte só é lida se estiver publicada e no mesmo build do "
-            "_build.json atual. Sem ele, só a fonte com _em-atualizacao.json é "
-            "recusada.",
-            dir_okay=False,
-        ),
-    ] = None,
 ) -> None:
     """Grava os esquemas de referência (<id>.schema.json) lendo o lake."""
     docs = _import_docs()
     source_dir = lake / source_id
     if not source_dir.is_dir():
         raise _fail(f"a fonte '{source_id}' não está no lake: {source_dir} não existe.")
-    try:
-        motivo = PoliticaDePublicacao.de(lake, estado).motivo(source_id)
-    except EstadoInvalido as exc:
-        raise _fail(str(exc)) from None
-    if motivo is not None:
-        # Uma fonte só: pulá-la e sair com 0 pareceria sucesso sem ter gravado nada.
-        raise _fail(f"fonte {source_id} pulada, nada gravado: {motivo}.")
     wanted = dataset or sorted(
         p.name
         for p in source_dir.iterdir()
