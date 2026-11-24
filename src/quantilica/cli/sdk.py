@@ -106,13 +106,14 @@ __all__ = [
 
 
 # Código de saída do ``sync`` quando parte dos arquivos baixou e parte falhou.
-# O que baixou está íntegro em disco (o cron segue com a ingestão); o código
-# distinto de 0 faz a falha parcial aparecer como alerta. Se nada baixou, o
-# código é 1 (falha total). 124/130/143 já são de timeout/sinal e 75/78 do cron.
+# O que baixou está íntegro em disco (o agendador pode seguir com a etapa
+# seguinte); o código distinto de 0 faz a falha parcial aparecer como alerta. Se
+# nada baixou, o código é 1 (falha total). 124/130/143 já são de timeout/sinal, e
+# 75/78 (EX_TEMPFAIL/EX_CONFIG, do sysexits) ficam para quem agenda a execução.
 EXIT_SYNC_PARTIAL = 3
 
 # Variável de ambiente que define ``--workers`` do ``sync``/``pipeline`` sem
-# argumento extra na linha de comando (o cron não pode passar flags). A flag
+# argumento extra na linha de comando (um agendador nem sempre consegue passar flags). A flag
 # explícita vence a variável, que vence o padrão do comando.
 SYNC_WORKERS_ENVVAR = "QUANTILICA_SYNC_WORKERS"
 
@@ -1163,7 +1164,7 @@ class FetcherApp:
 
                 policy = FreshnessPolicy(self.freshness_policy)
                 if policy == FreshnessPolicy.REMOTE_ONLY:
-                    # F3: o conteúdo é a única verdade (CAS sha256); não sondar
+                    # O conteúdo é a única verdade (sha256); não sondar
                     # com HEAD — o timestamp do nome virá dos metadados da
                     # própria entrada, não de uma sondagem remota.
                     return None
@@ -1199,10 +1200,10 @@ class FetcherApp:
         # `force` só é repassado quando True: clients/subclasses antigos não
         # precisam aceitar o kwarg.
         extra: dict[str, Any] = {"force": True} if force else {}
-        # F3: CAS-by-SHA256 deduplication for REMOTE_ONLY sources (A7 archetype).
-        # When freshness_policy is REMOTE_ONLY, we skip HEAD probe and rely on
+        # Deduplication by SHA-256 for REMOTE_ONLY sources.
+        # When freshness_policy is REMOTE_ONLY, we skip the HEAD probe and rely on
         # content hash comparison to avoid creating new @YYYYMMDD versions for
-        # unchanged content. Per ADR 2026-10-30 (F3).
+        # unchanged content.
         try:
             from quantilica.core.sync import FreshnessPolicy
 
@@ -1644,7 +1645,7 @@ class FetcherApp:
             if retryable and attempt < _PROBE_ATTEMPTS:
                 time.sleep(_PROBE_BACKOFF_S * attempt)
                 continue
-            # WARNING: o cron não roda com --verbose e precisa registrar a causa.
+            # WARNING: uma execução agendada não roda com --verbose e precisa registrar a causa.
             logger.warning(
                 "[check] probe Range falhou para %s após %d tentativa(s): %r",
                 url,

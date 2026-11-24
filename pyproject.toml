@@ -42,9 +42,9 @@ dev = ["ruff>=0.9.0", "pyright>=1.1.380", "pytest>=8.0.0", "pyarrow>=15.0.0", "p
 # Exemplo de instalação local para desenvolvimento:
 #   uv pip install -e ../comex-fetcher ../rtn-fetcher ...
 
-# Para desenvolvimento local do quantilica-core em conjunto com o CLI:
-# cd quantilica-cli && uv pip install -e ../quantilica-core (sem [tool.uv.sources])
-# Em produção, quantilica-core resolve pelo PyPI (pin de registro em dependencies).
+# Para desenvolver o quantilica-core junto com o CLI, instale-o em modo editável
+# no mesmo ambiente: uv pip install -e ../quantilica-core. Fora disso, o
+# quantilica-core resolve pelo PyPI (pino em dependencies).
 
 # [tool.hatch.metadata]
 # allow-direct-references = true
@@ -64,8 +64,8 @@ required-version = ">=0.9"
 # (index-strategy padrão first-index). O PyPI vem antes, então o índice
 # Quantilica (GitHub Pages, que responde 503 intermitente a pacote que não
 # hospeda) só é consultado para o que não está no PyPI (quantilica-analytics).
-# Sem [tool.uv.sources]: no workspace do monorepo quantilica-analytics é membro
-# e uma fonte de índice aqui quebraria o `uv run` da raiz.
+# Sem [tool.uv.sources]: uma fonte de índice fixa aqui atrapalharia quem usa o
+# quantilica-analytics a partir de um clone local do código.
 [[tool.uv.index]]
 name = "pypi"
 url = "https://pypi.org/simple/"

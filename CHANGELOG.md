@@ -7,8 +7,14 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+### Removido
+
+- **Quebra:** comandos de uso interno da equipe saíram do pacote. Deixam de existir `quantilica catalog sync` (o grupo `catalog` inteiro), as opções `--somente-leitura`, `--estado`, `--limpar-marcador`, `--exceptions-from-ledger` e `--exceptions-max-age-hours` do `quantilica lake audit`, a opção `--estado` e a variável `QUANTILICA_LAKE_ESTADO` do `quantilica docs schema`, e os módulos `quantilica.cli.catalog`, `quantilica.cli.lake_estado` e `quantilica.cli.ledger_exceptions`. Quem passar uma dessas opções recebe erro de uso (código 2). O restante de `lake select`, `lake build` e `lake audit` (inclusive `--ledger` e `--exceptions`) e de `docs` continua igual.
+- Entradas antigas deste arquivo que descreviam esses comandos foram resumidas.
+
 ### Alterado
 
+- Comentários e textos do pacote falam em "agendador" e não em rotinas específicas de uma equipe; os códigos de saída do `sync` não mudam.
 - O fallback do diretório do lake (`_default_lake_dir`) deixa de usar `~/data/lake` e passa a usar `$XDG_DATA_HOME/quantilica/lake` (ou `~/.local/share/quantilica/lake`), igual ao `quantilica.core.lake.lake_root()`. `QUANTILICA_LAKE_DIR` e `QUANTILICA_DATA_DIR` continuam tendo precedência.
 
 ## [0.27.0] - 2026-11-19
@@ -17,7 +23,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - `sync --summary-json ARQUIVO` (e `pipeline --summary-json`, que o repassa ao passo de download): grava, ao terminar, um resumo JSON com o que antes só saía na linha de texto `Concluído: X/Y arquivo(s) baixado(s)`. Esquema versão 1: `schema_version`, `tool`/`tool_version`, `fetcher`, `command`, `status` (`success`, `partial`, `interrupted` ou `failed`), `exit_code`, `dry_run`, `started_at`/`finished_at`/`duration_seconds` (UTC), `total`, `succeeded` (o numerador de `Concluído`, inclui o que já estava em dia), `failed`, `downloaded` (transferências de fato), `skipped` (em dia), `bytes_downloaded`, `errors` (até 100 `{id, message}`, com `errors_truncated`) e `error` (motivo de falha que não é de arquivo: plano inválido, grupo desconhecido, exceção inesperada). `downloaded`, `skipped` e `bytes_downloaded` vêm do callback de progresso do cliente e são `null` quando o fetcher substitui `download_datasets`. A gravação é atômica, cria a pasta pai e nunca muda o código de saída: se falhar, avisa em `stderr`. Também grava na falha (grupo ou plano inválido, interrupção, exceção). Novo módulo `quantilica.cli.summary` (`SummaryRecorder`, `DownloadStats`, `write_summary_json`) para os `sync` próprios dos fetchers adotarem o mesmo contrato; `FetcherApp.last_download_stats` expõe os contadores do último `download_datasets`.
 - `--summary-json` também grava no timeout: com a opção pedida, o `sync` instala um handler de `SIGTERM` que levanta `SystemExit(143)` (restaura o anterior ao sair), então o arquivo sai com `status` `interrupted` e `exit_code` 143. O `graceful_executor` passou a cancelar as entradas pendentes também nesse caso. Ctrl-C fora do download vira `Exit(130)` explícito, igual ao `exit_code` do arquivo em qualquer versão do typer.
 - `pipeline --summary-json` só repassa a opção se o `sync` registrado aceita o parâmetro `summary_json`; senão avisa no `stderr` e segue sem o resumo, e a opção fica oculta na ajuda do `pipeline` (quem sonda a ajuda não tem falso positivo; caso de fetchers com `build_default_commands=False`).
-- `lake audit --exceptions-from-ledger RETRATO`: lê as exceções vigentes da auditoria (caminhos brutos sabidamente sem Parquet, os mesmos que o `--exceptions` aceita em arquivo texto, com padrões fnmatch) do retrato do ledger (`ledger-vigente-*.jsonl.gz`, ou a pasta com o `ledger-vigente-latest.jsonl.gz`). Vale a união com `--exceptions`, que continua funcionando. O retrato leva as exceções no cabeçalho (campo `lake_exceptions`, com contagem e sha256 próprios, conferidos na leitura); as que já expiraram (`expira_em`) são descartadas. Retrato sem o campo avisa e segue sem exceções; arquivo ilegível, de outro formato ou adulterado é erro (exit 1). `--exceptions-max-age-hours H` (padrão 48): retrato com `generated_at` mais velho que o limite (ou de mais de 15 min no futuro) é erro (exit 1), porque uma exceção removida desde então ainda valeria. O leitor recusa caminho repetido, absoluto, com letra de unidade ou com `..`. O relatório JSON (`--json`, `--json-file`) ganha a chave `excecoes_do_ledger` (retrato, `generated_at`, vigentes e expiradas) quando o retrato é usado. O leitor (`quantilica.cli.ledger_exceptions`) usa só a biblioteca padrão e a primeira linha do arquivo: o formato é escrito por outro pacote, que o cli não importa.
+- Ajustes em comandos de uso interno da equipe, removidos do pacote na 0.28.0.
 
 ## [0.26.0] - 2026-11-16
 
@@ -25,10 +31,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - O extra `lake` exige `quantilica-analytics>=0.13.0`.
 
 ### Adicionado
-- `lake audit --somente-leitura --estado ARQ.json` (a auditoria de um lake montado só para leitura: não escreve nada nele, fonte com `_em-atualizacao.json` fica "em atualização" e não reprova, o `_build.json` é conferido) e `lake audit --limpar-marcador` (remove o marcador das fontes publicadas). `--estado` e `--json-file` apontando para dentro do lake são recusados com `--somente-leitura`. Exigem o `quantilica-analytics` que traz o marcador e o manifesto do build.
-- `catalog sync` e `docs schema` ganham `--estado ARQ.json` (ou `QUANTILICA_LAKE_ESTADO`): só leem as fontes que o estado dá como `publicado` e cujo `build_id` bate com o `_build.json` atual, e pulam as demais com aviso (`docs schema`, que trata uma fonte só, sai com 1). Sem estado, as fontes com `_em-atualizacao.json` são puladas com aviso e o resto segue como antes, inclusive um lake sem `_build.json`. O `catalog sync` deixa de descer nas pastas das fontes puladas. Estado inexistente ou inválido é erro.
-- Com estado, a leitura também confere o disco com o `_build.json` na hora de ler: cada Parquet listado existe com o mesmo tamanho e não há Parquet fora da lista; divergência pula a fonte com aviso. Isso cobre a janela em que a sincronização entrega arquivos de um build novo antes do marcador, ou tira o marcador antes dos Parquets. Quem lê deve sempre usar o estado (`QUANTILICA_LAKE_ESTADO`). Limitação: a conferência é por nome e tamanho, não pelo conteúdo.
-- `lake audit --estado` exige `--somente-leitura` (exit 2). Com um `quantilica-analytics` que não conhece as opções novas, o comando diz para atualizá-lo (exit 2), sem traceback. A auditoria comum não passa nada novo ao analytics.
+- Ajustes em comandos de uso interno da equipe, removidos do pacote na 0.28.0.
 
 ### Alterado
 - Verificação de tipos com `pyright` (`[tool.pyright]`, modo `basic`) zerada em `src`.
@@ -47,21 +50,18 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 ## [0.24.0] - 2026-11-15
 ### Alterado
 - Piso de `quantilica-core` sobe para `>=0.24.0` (granularidades semestral, trimestral e diária do perfil de colunas).
-- `quantilica catalog sync --dry-run`: o resumo do perfil conta os períodos na unidade da granularidade (`8 trimestres`, `4 semestres`, `31 dias`, `1 mês`), em vez de só `meses` ou `anos`. Os perfis semestrais, trimestrais e diários dependem da versão do `quantilica-core` com essas granularidades (ainda sem release; o piso de versão não mudou).
+- Ajustes em comandos de uso interno da equipe, removidos do pacote na 0.28.0.
 
 ## [0.23.0] - 2026-11-15
 ### Adicionado
-- `quantilica catalog sync` envia o perfil de colunas de cada dataset do lake na chave `perfis` do payload (`{"dataset_id", "perfil", "perfil_sha256"}`): por período, o total de linhas e os nulos de cada coluna, lidos dos rodapés Parquet por `quantilica.core.lake_profile.profile_from_lake`. O documento segue sem alteração, com o hash do core; só a coluna cujo nome o portal recusa sai do perfil (e do catálogo), com o hash recalculado. O perfil de um dataset nunca é partido entre lotes e viaja com as colunas dele. As colunas enviadas passam a ser a união das do perfil com as do primeiro Parquet, com o `dtype_arrow` do último período em que a coluna existe, porque o portal exige uma linha em `columns` para cada coluna do perfil. **O recurso exige o `quantilica-core` com `lake_profile`** (ainda sem release; o piso de versão não mudou): sem ele, o cli avisa e segue sem perfis. Dataset sem Parquet, sem partição `ano=` ou com perfil acima do limite do envio fica sem perfil, com aviso e o motivo.
-- `quantilica catalog sync --dry-run` imprime, por dataset, o resumo do perfil (intervalo e número de períodos, colunas, eras de esquema e tamanho do documento); o JSON do payload deixa de repetir o perfil.
-- Depois do envio, o cli informa quantos perfis o portal recebeu e quantos mudaram (`profiles` e `profiles_changed`; um segundo sync idêntico altera 0). Se o portal recusar o perfil de algum dataset (`counts.profiles_refused` e a lista `profiles_refused` da resposta), o cli avisa com o dataset e o motivo de cada um e termina com código 0: o resto do catálogo foi gravado. Com vários lotes, as listas de recusas são concatenadas.
+- Ajustes em comandos de uso interno da equipe, removidos do pacote na 0.28.0.
 
 ### Alterado
 - Piso de `quantilica-core` sobe para `>=0.23.0` (o perfil de colunas usa `quantilica.core.lake_profile`).
-- `quantilica catalog sync` deixa de enviar `percentual_nulos` (o portal calcula do perfil, junto com `periodo_inicio` e `periodo_fim`).
-- O erro HTTP do envio mostra o `detail` do portal em vez do JSON cru (o 400 de perfil traz o dataset e o motivo).
+- Ajustes em comandos de uso interno da equipe, removidos do pacote na 0.28.0.
 
 ### Corrigido
-- `quantilica catalog sync`: os Parquets de cada dataset são lidos em ordem de caminho. Sem o perfil de colunas, o esquema enviado vinha do primeiro arquivo na ordem do sistema de arquivos, que varia entre máquinas.
+- Ajustes em comandos de uso interno da equipe, removidos do pacote na 0.28.0.
 - CI: o pyproject declara o PyPI antes do índice Quantilica (`[[tool.uv.index]]`), e o workflow perde `--index` e `--index-strategy`. Com a estratégia padrão `first-index`, o `uv sync` só consulta o índice para o que não está no PyPI (`quantilica-analytics`) e deixa de receber o 503 intermitente que o GitHub Pages devolve a caminhos inexistentes.
 
 ## [0.22.0] - 2026-11-14
@@ -113,25 +113,25 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ### Alterado
 
-- Lotes do `quantilica catalog sync` de até 90 MB (antes 4 MB): o portal 1.1.2 aceita 100 MiB na rota de sync. O lake atual volta a ir num envio só.
+- Ajustes em comandos de uso interno da equipe, removidos do pacote na 0.28.0.
 
 ## [0.21.3] - 2026-11-13
 
 ### Corrigido
 
-- `quantilica catalog sync` deixa fora do catálogo, com aviso, a coluna cujo nome o portal recusa (vazio, acima de 128 caracteres ou com caractere de controle) e tira o NUL dos valores da amostra (o jsonb não o aceita). No lake de 13/11/2026 eram 23 colunas de 20 datasets da ANP, ANAC e INEP, convertidas com delimitador ou codificação errados.
+- Ajustes em comandos de uso interno da equipe, removidos do pacote na 0.28.0.
 
 ## [0.21.2] - 2026-11-13
 
 ### Corrigido
 
-- `quantilica catalog sync` envia o payload em lotes por fonte (até 4 MB cada, a fonte nunca é partida): o portal recusa corpos acima de 5 MiB (413) e o lake inteiro passa de 8 MB. O sync do portal é upsert, então os lotes não apagam o que veio antes; as respostas são somadas.
+- Ajustes em comandos de uso interno da equipe, removidos do pacote na 0.28.0.
 
 ## [0.21.1] - 2026-11-13
 
 ### Corrigido
 
-- `quantilica catalog sync` envia `User-Agent: quantilica-cli/<versão>`: o portal recusava o padrão do `urllib` (`Python-urllib`) com 403.
+- Ajustes em comandos de uso interno da equipe, removidos do pacote na 0.28.0.
 
 ## [0.21.0] - 2026-11-13
 
@@ -148,20 +148,17 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ### Alterado
 
-- `quantilica catalog sync` resolve o `source_id` do lake pelo registro de fetchers (apelido vira id canônico, e o id do dataset acompanha) e preenche a fonte com `nome`, `orgao`, `licenca`, `homepage`, `dominio` e `cadencia` do `FetcherInfo`; fonte fora do registro fica fora do envio, e com o registro vazio nada é enviado (sem registro não há como saber se a fonte pode ser redistribuída). Deixou de inventar `Geral`/`Open Data`/`mensal`/`nacional`. Cada dataset leva `fetcher_id` e `total_linhas` (soma de `num_rows` dos Parquets). Fonte de redistribuição restrita não entra no payload. Novo `--registry` aponta um `registry.json` no lugar dos fetchers instalados; o resumo do `--dry-run` mostra o que ficou de fora e o que é desconhecido.
+- Ajustes em comandos de uso interno da equipe, removidos do pacote na 0.28.0.
 - `quantilica sources install` consulta o índice da Quantilica antes do PyPI (uv: `--default-index` PyPI + `--index` Quantilica + `first-index`), e recusa instalar o que esse índice não publica, fechando o risco de dependency confusion; o erro de instalação informa quando o nome digitado foi lido como `<nome>-fetcher`.
 - `quantilica sources install/uninstall` deixou de depender de uma lista de
   fetchers escrita à mão: o nome curto vira `<id>-fetcher` (regra do registro),
   então uma fonte nova é aceita sem editar o código. A tabela `SOURCES_REGISTRY`
   guarda só o que foge da regra (`sql` e apelidos antigos como `bcb`, `rfb`,
   `td`). Os nomes aceitos antes continuam levando à mesma distribuição.
-- `quantilica catalog sync`: as amostras continuam com até 20 linhas por padrão (`--sample-size`), como estão no lake; com `--sample-size 0` a amostra não é enviada, e a já gravada no portal fica.
-- `quantilica catalog sync` preenche a `sigla` da fonte com o primeiro trecho entre parênteses do órgão do registro (`... (ANAC)` vira `ANAC`; sem parênteses a sigla não é enviada, e a já gravada no portal fica).
-- `quantilica catalog sync` recusa rodar sem `pyarrow` (antes saía com código 0, sem colunas, sem amostras e com zero linhas); o extra `lake` declara `pyarrow`.
 
 ### Corrigido
 
-- `lake_path` do `catalog sync` sai com `/` também no Windows (antes, `anac\aero-caracteristicas`).
+- Ajustes em comandos de uso interno da equipe, removidos do pacote na 0.28.0.
 
 ## [0.19.0] - 2026-11-11
 
@@ -176,10 +173,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ### Corrigido
 
-- `quantilica catalog sync` envia só para `POST /api/v2/admin/catalog/sync`. A
-  URL de reserva `/api/v2/catalog/sync` (e a tentativa em 404 que existia por
-  causa dela) saiu: o portal removeu esse caminho. Um 404 agora falha na hora
-  com a mensagem do servidor.
+- Ajustes em comandos de uso interno da equipe, removidos do pacote na 0.28.0.
 - `sync` de todo fetcher construído com `FetcherApp` não sai mais com código 0
   quando algum arquivo falha. Se ao menos um arquivo foi baixado e outros
   falharam, sai com o código `3` (`EXIT_SYNC_PARTIAL`, "download parcial": o que
@@ -246,7 +240,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ### Adicionado
 
-- `quantilica catalog sync`: novo grupo `catalog` com o comando `sync`. Lê os descritores `_dataset.json` do lake, extrai esquemas Arrow e uma amostra de linhas (`--sample-size`, no máximo 20) e envia o catálogo à API do serviço indicado por `--portal-url` e `--api-key`. `--source` limita a uma fonte, `--lake-dir` aponta o lake e `--dry-run` só mostra o conteúdo que seria enviado.
+- Ajustes em comandos de uso interno da equipe, removidos do pacote na 0.28.0.
 - `quantilica lake build --profile` e `--dataset`: `--profile` aplica um perfil de memória (`96gb-batch` ou `96gb-monolithic`) e `--dataset` limita a conversão aos datasets pedidos. Exigem o extra `lake` com `quantilica-analytics>=0.9.0`.
 - SDK dos coletores: `FetcherApp.command_backfill()` registra um subcomando `backfill` de carga histórica com ponto de retomada em `<saída>/.backfill/<nome>.json` (`--resume`/`--restart`, e as opções `--rateio` e `--regional` repassadas à fonte que as declara).
 - SDK dos coletores: `FetcherApp(freshness_policy=...)` aplica a política de frescura (`quantilica.core.sync.FreshnessPolicy`). Com `remote_only` não há sonda `HEAD` e o download ativa a deduplicação por SHA-256 do `quantilica-core`.
@@ -263,7 +257,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 - `make_resolve_groups` aceita alias com valor `str` (por exemplo `all` para `exp`). Antes o valor era expandido caractere a caractere e a sincronização padrão ou completa falhava com "Grupo desconhecido".
 - Com `freshness_policy=remote_only`, a deduplicação por SHA-256 só é repassada ao cliente de download que a aceita; antes o `FtpClient` recebia o argumento e a sincronização falhava com `TypeError`.
-- `catalog sync`: os tipos JSON que não são primitivos são normalizados, os grupos de linhas são dimensionados com segurança e os caminhos do lake são resolvidos de forma robusta.
+- Ajustes em comandos de uso interno da equipe, removidos do pacote na 0.28.0.
 - Os testes de `--help` do `lake` não dependem mais de cor forçada no CI.
 
 ## [0.14.0] - 2026-10-30
@@ -442,7 +436,7 @@ boilerplate nos fetchers (decisão
 ## [0.3.1] - 2026-08-22
 
 ### Corrigido
-- `DEFAULT_INDEX_URL` apontado para `https://index.quantilica.com/simple/` — a URL anterior (`quantilica.com/quantilica-index/`) parou de ser servida quando o domínio passou ao portal, quebrando o `quantilica install` para fetchers fora do PyPI legado (detalhes na decisão de distribuição de 2026-08-22).
+- Ajustes em comandos de uso interno da equipe, removidos do pacote na 0.28.0.
 - `install`/`uninstall` agora mesclam o registro remoto (`sources.json`) com o registro local, resolvendo também nomes canônicos do índice (ex.: `tesouro-direto`, além de `td`).
 
 ## [0.3.0] - 2026-08-10
