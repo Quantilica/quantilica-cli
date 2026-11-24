@@ -1,4 +1,4 @@
-"""Testes unitários para quantilica.cli.sdk (Onda 2: FetcherApp melhorias)."""
+"""Testes unitários para quantilica.cli.sdk (FetcherApp)."""
 
 from __future__ import annotations
 
@@ -729,7 +729,7 @@ def test_pipeline_lake_flag_and_parquet_dir_alias(
 
 
 # ---------------------------------------------------------------
-# REMOTE_ONLY: CAS por SHA-256 só vai a clientes que o aceitam
+# REMOTE_ONLY: deduplicação por SHA-256 só vai a clientes que o aceitam
 # ---------------------------------------------------------------
 
 

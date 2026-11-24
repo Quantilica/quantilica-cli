@@ -1,4 +1,4 @@
-"""Testes unitários para Onda A.2 do SDK (command_convert/pipeline/archive, SyncPlan)."""
+"""Testes unitários para o SDK (command_convert/pipeline/archive, SyncPlan)."""
 
 from __future__ import annotations
 
