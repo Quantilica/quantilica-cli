@@ -33,7 +33,8 @@ from quantilica.core.lake import (
 
 SCRATCH_ENV = "QUANTILICA_LAKE_SCRATCH"
 _TEMP_SUFFIX = ".tmp"
-_VIEW_PREFIX = "quantilica-vigente-"
+_VIEW_PREFIX = ".quantilica-vigente-"  # oculta: não aparece em listagens do scratch
+_LEGACY_VIEW_PREFIX = "quantilica-vigente-"  # prefixo antigo (sem ponto), só na limpeza
 _OWNER_FILE = "owner.json"
 _ORPHAN_SECONDS = 7 * 24 * 3600  # visão sem owner.json só some depois disso
 
@@ -42,20 +43,31 @@ class ViewUnavailableError(RuntimeError):
     """A visão vigente não pôde ser montada sem copiar dados."""
 
 
+_MAX_UNWRAP = 8  # profundidade máxima ao seguir partial/__wrapped__
+
+
+def _declares_selects_versions(obj: object, depth: int = 0) -> bool:
+    """Se ``obj``, seu dono (método ligado), ``partial.func`` ou ``__wrapped__``
+    declara ``selects_versions = True``."""
+    if obj is None or depth > _MAX_UNWRAP:
+        return False
+    if getattr(obj, "selects_versions", False) is True:
+        return True
+    return any(
+        _declares_selects_versions(getattr(obj, attr, None), depth + 1)
+        for attr in ("__self__", "func", "__wrapped__")
+    )
+
+
 def converter_selects_versions(*candidates: object) -> bool:
     """Se algum dos objetos declara ``selects_versions = True``.
 
     Passe a função registrada em ``convert`` e/ou o objeto do entry point
-    ``quantilica.lake``; um método ligado também vale pelo objeto dono.
+    ``quantilica.lake``. A declaração também vale quando está no objeto dono de
+    um método ligado, na função embrulhada por ``functools.partial`` (``.func``)
+    ou na decorada com ``functools.wraps`` (``__wrapped__``).
     """
-    for candidate in candidates:
-        if candidate is None:
-            continue
-        owner = getattr(candidate, "__self__", None)
-        for obj in (candidate, owner):
-            if obj is not None and getattr(obj, "selects_versions", False) is True:
-                return True
-    return False
+    return any(_declares_selects_versions(candidate) for candidate in candidates)
 
 
 def _relative_files(root: Path) -> list[str]:
@@ -154,16 +166,21 @@ def _is_orphan(entry: Path, now: float) -> bool:
 
 
 def remove_orphan_views(base: Path) -> int:
-    """Remove de ``base`` as visões ``quantilica-vigente-*`` de processos mortos.
+    """Remove de ``base`` as visões ``.quantilica-vigente-*`` de processos mortos.
 
-    Devolve quantas removeu. Só mexe nas pastas deste prefixo, e ``rmtree`` não
+    Reconhece também o prefixo antigo, sem ponto (``quantilica-vigente-*``).
+    Devolve quantas removeu. Só mexe nas pastas desses prefixos, e ``rmtree`` não
     segue links: os arquivos do bruto nunca são tocados.
     """
     if not base.is_dir():
         return 0
     now = time.time()
     removed = 0
-    for entry in base.glob(f"{_VIEW_PREFIX}*"):
+    entries = [
+        *base.glob(f"{_VIEW_PREFIX}*"),
+        *base.glob(f"{_LEGACY_VIEW_PREFIX}*"),
+    ]
+    for entry in entries:
         if entry.is_dir() and not entry.is_symlink() and _is_orphan(entry, now):
             shutil.rmtree(entry, ignore_errors=True)
             removed += 1
@@ -202,9 +219,10 @@ def vigente_view(root: Path, *, skip: bool = False) -> Iterator[tuple[Path, int]
     ``root`` e ``0``, sem montar nada. Caso contrário monta a visão com
     hardlinks ou symlinks e a remove ao sair, também quando o bloco levanta.
     Nunca copia dados: se o scratch não aceita link (volume diferente e sem
-    privilégio de symlink) levanta ``ViewUnavailableError``; aponte
-    ``QUANTILICA_LAKE_SCRATCH`` para o volume do bruto, ou passe a pasta da
-    visão vigente pronta (``quantilica lake select``).
+    privilégio de symlink) ou se o scratch está dentro da pasta do bruto
+    levanta ``ViewUnavailableError``; aponte ``QUANTILICA_LAKE_SCRATCH`` para uma
+    pasta do mesmo volume do bruto e fora dela, ou passe a pasta da visão
+    vigente pronta (``quantilica lake select``).
     """
     if skip or not root.is_dir():
         yield root, 0
@@ -224,11 +242,19 @@ def vigente_view(root: Path, *, skip: bool = False) -> Iterator[tuple[Path, int]
             raise ViewUnavailableError(
                 f"não foi possível ligar (hardlink ou symlink) os arquivos de {root} "
                 f"em {base}, e a visão vigente não copia dados. Aponte "
-                f"{SCRATCH_ENV} para um volume que aceite link a partir do bruto, "
-                "ou passe a pasta da visão vigente pronta ('quantilica lake select')."
+                f"{SCRATCH_ENV} para uma pasta do mesmo volume do bruto (e fora da "
+                "pasta do bruto), ou passe a pasta da visão vigente pronta "
+                "('quantilica lake select')."
             )
         view = tmp / "visao" / (root.absolute().name or "bruto")
-        summary = materialize_view(root, view)
+        try:
+            summary = materialize_view(root, view)
+        except ValueError as exc:  # scratch dentro do bruto (ou o contrário)
+            raise ViewUnavailableError(
+                f"a pasta de trabalho da visão vigente ({base}) se sobrepõe ao "
+                f"bruto ({root}): {exc} Aponte {SCRATCH_ENV} para uma pasta do "
+                "mesmo volume do bruto, mas fora da pasta do bruto."
+            ) from exc
         if summary.copy:  # pragma: no cover - a sonda acima já falharia antes
             raise ViewUnavailableError(
                 f"a visão vigente de {root} precisaria copiar {summary.copy} "

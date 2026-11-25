@@ -548,3 +548,89 @@ def test_build_does_not_warn_for_the_current_view(
 ) -> None:
     result = runner.invoke(app, _build_args(corpus, tmp_path))
     assert "Aviso" not in _plain(result.output)
+
+
+# --- fontes cujo conversor escolhe a versão vigente (selects_versions) ----------
+
+
+class _SelfSelecting:
+    selects_versions = True
+
+
+@pytest.fixture
+def alfa_selects_versions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """O conversor instalado de `alfa` declara `selects_versions`."""
+    pytest.importorskip("quantilica.core.lake")
+
+    def load(source_id: str):
+        return _SelfSelecting() if source_id == "alfa" else None
+
+    monkeypatch.setattr("quantilica.core.lake.load_lake_converter", load)
+
+
+def test_build_does_not_warn_for_a_self_selecting_source(
+    corpus, tmp_path: Path, fake_engine, alfa_selects_versions: None
+) -> None:
+    args = _build_args(corpus, tmp_path, "--sources", "alfa")
+    args[args.index("--input") + 1] = str(corpus.raw)
+    result = runner.invoke(app, args)
+    assert "Aviso" not in _plain(result.output)
+    assert result.exit_code == 0, result.output
+
+
+def test_build_still_warns_when_the_converter_is_not_installed(
+    corpus, tmp_path: Path, fake_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("quantilica.core.lake.load_lake_converter", lambda _s: None)
+    args = _build_args(corpus, tmp_path, "--sources", "alfa")
+    args[args.index("--input") + 1] = str(corpus.raw)
+    result = runner.invoke(app, args)
+    assert "Aviso" in _plain(result.output)
+
+
+def test_build_still_warns_when_loading_the_converter_fails(
+    corpus, tmp_path: Path, fake_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(_s: str):
+        raise ImportError("quebrado")
+
+    monkeypatch.setattr("quantilica.core.lake.load_lake_converter", boom)
+    args = _build_args(corpus, tmp_path, "--sources", "alfa")
+    args[args.index("--input") + 1] = str(corpus.raw)
+    assert "Aviso" in _plain(runner.invoke(app, args).output)
+
+
+def test_select_keeps_every_version_of_a_self_selecting_source(
+    tmp_path: Path, corpus, alfa_selects_versions: None
+) -> None:
+    out = tmp_path / "out"
+    args = ["lake", "select", "--raw", str(corpus.raw), "--out", str(out)]
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0, result.output
+    old = out / "alfa" / "vendas" / "vendas_2025@20260101.csv"
+    new = out / "alfa" / "vendas" / "vendas_2025@20261021.csv"
+    assert old.exists() and new.exists()
+    assert (out / "alfa" / "vendas" / "vendas_2025@20260101.csv.manifest.json").exists()
+    # as demais fontes seguem a regra geral
+    assert (out / "beta" / "precos" / "precos_202501@20261021.csv").exists()
+    text = _plain(result.output)
+    assert "alfa: seleção própria do conversor" in text
+    assert "excluídos:  0" in text
+    # idempotente: a segunda rodada mantém tudo
+    again = runner.invoke(app, args)
+    assert again.exit_code == 0, again.output
+    assert old.exists() and new.exists()
+    assert "excluídos:  0" in _plain(again.output)
+
+
+def test_select_without_a_declaring_converter_keeps_only_the_current(
+    tmp_path: Path, corpus, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("quantilica.core.lake.load_lake_converter", lambda _s: None)
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app, ["lake", "select", "--raw", str(corpus.raw), "--out", str(out)]
+    )
+    assert result.exit_code == 0, result.output
+    assert not (out / "alfa" / "vendas" / "vendas_2025@20260101.csv").exists()
+    assert "seleção própria" not in _plain(result.output)

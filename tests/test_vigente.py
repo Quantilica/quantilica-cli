@@ -279,6 +279,36 @@ def test_converter_selects_versions_reads_the_declaration() -> None:
     assert not converter_selects_versions(lambda: None)
 
 
+def test_converter_selects_versions_follows_partial_and_wrapped() -> None:
+    import functools
+
+    def declared(input: Path, lake: Path) -> None: ...
+
+    declared.selects_versions = True  # type: ignore[attr-defined]
+
+    def silent(input: Path, lake: Path) -> None: ...
+
+    assert converter_selects_versions(functools.partial(declared, lake=None))
+    assert converter_selects_versions(
+        functools.partial(functools.partial(declared, 1), 2)
+    )
+    assert not converter_selects_versions(functools.partial(silent, lake=None))
+
+    @functools.wraps(declared)
+    def wrapper(*args: object, **kwargs: object) -> None:
+        return declared(*args, **kwargs)  # type: ignore[arg-type]
+
+    del wrapper.selects_versions  # wraps copia __dict__: força o caminho __wrapped__
+    assert wrapper.__wrapped__ is declared  # type: ignore[attr-defined]
+    assert converter_selects_versions(wrapper)
+
+    @functools.wraps(silent)
+    def plain(*args: object, **kwargs: object) -> None:
+        return silent(*args, **kwargs)  # type: ignore[arg-type]
+
+    assert not converter_selects_versions(plain)
+
+
 def test_skip_passes_the_original_folder(tmp_path: Path, scratch: Path) -> None:
     raw = _raw(tmp_path, TWO_VERSIONS)
     with vigente_view(raw, skip=True) as (source, ignored):
@@ -296,7 +326,7 @@ def test_view_uses_the_absolute_name_not_the_symlink_target(
 
 
 def _owned(base: Path, name: str, *, pid: int, host: str | None = None) -> Path:
-    folder = base / f"quantilica-vigente-{name}"
+    folder = base / f".quantilica-vigente-{name}"
     (folder / "visao").mkdir(parents=True)
     owner = {"pid": pid, "hostname": host or socket.gethostname()}
     (folder / "owner.json").write_text(json.dumps(owner))
@@ -329,8 +359,8 @@ def test_orphan_views_of_dead_processes_are_removed(
 
 def test_orphan_view_without_owner_waits_seven_days(scratch: Path) -> None:
     scratch.mkdir()
-    fresh = scratch / "quantilica-vigente-novo"
-    old = scratch / "quantilica-vigente-velho"
+    fresh = scratch / ".quantilica-vigente-novo"
+    old = scratch / ".quantilica-vigente-velho"
     fresh.mkdir()
     old.mkdir()
     past = time.time() - 8 * 24 * 3600
@@ -382,3 +412,51 @@ def test_convert_command_refusing_copy_is_a_clear_error(
     )
     assert result.exit_code == 1
     assert "lake select" in " ".join(result.output.split())
+
+
+def test_orphan_cleanup_also_accepts_the_old_prefix_without_dot(
+    tmp_path: Path, scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scratch.mkdir()
+    monkeypatch.setattr(vigente_mod, "_pid_alive", lambda pid: False)
+    legacy = scratch / "quantilica-vigente-antigo"
+    (legacy / "visao").mkdir(parents=True)
+    (legacy / "owner.json").write_text(
+        json.dumps({"pid": 222, "hostname": socket.gethostname()})
+    )
+    assert remove_orphan_views(scratch) == 1
+    assert not legacy.exists()
+
+
+def test_view_folder_name_starts_with_a_dot(tmp_path: Path, scratch: Path) -> None:
+    raw = _raw(tmp_path, TWO_VERSIONS)
+    with vigente_view(raw) as (source, _):
+        assert source.parent.parent.name.startswith(".quantilica-vigente-")
+
+
+def test_scratch_inside_the_raw_is_a_clear_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw = _raw(tmp_path, TWO_VERSIONS)
+    monkeypatch.setenv("QUANTILICA_LAKE_SCRATCH", str(raw / "scratch"))
+    with pytest.raises(ViewUnavailableError) as info:
+        with vigente_view(raw):
+            raise AssertionError("não deveria montar")
+    message = " ".join(str(info.value).split())
+    assert "mesmo volume do bruto" in message
+    assert "fora da pasta do bruto" in message
+    assert "para o volume do bruto" not in message
+    assert not list((raw / "scratch").iterdir())  # a visão foi removida
+
+
+def test_convert_command_with_scratch_inside_the_raw_exits_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw = _raw(tmp_path, TWO_VERSIONS)
+    monkeypatch.setenv("QUANTILICA_LAKE_SCRATCH", str(raw / "scratch"))
+    result = runner.invoke(
+        _grouped(_convert_app([]).app),
+        ["fd", "convert", "-i", str(raw), "--lake", str(tmp_path / "lake")],
+    )
+    assert result.exit_code == 1
+    assert "fora da pasta do bruto" in " ".join(result.output.split())

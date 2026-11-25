@@ -72,6 +72,96 @@ def _split_sources(value: str | None) -> list[str] | None:
     return sources
 
 
+def _selects_versions(source: str) -> bool:
+    """Se o conversor instalado de ``source`` declara ``selects_versions``.
+
+    Esse conversor escolhe a versão vigente por conta própria e recebe de
+    propósito várias versões do mesmo arquivo. Sem conversor instalado (ou com
+    erro ao carregá-lo) devolve ``False``: vale o comportamento geral.
+    """
+    from quantilica.cli.vigente import converter_selects_versions
+
+    try:
+        from quantilica.core.lake import load_lake_converter
+
+        converter = load_lake_converter(source)
+    except Exception:
+        return False
+    return converter_selects_versions(converter, getattr(converter, "convert", None))
+
+
+def _self_selecting_sources(raw: Path) -> list[str]:
+    """Pastas de fonte de ``raw`` cujo conversor declara ``selects_versions``."""
+    return sorted(
+        entry.name
+        for entry in raw.iterdir()
+        if entry.is_dir() and _selects_versions(entry.name)
+    )
+
+
+def _files_to_link(root: Path) -> list[str]:
+    """Arquivos de ``root`` (relativos, manifestos incluídos, sem ``*.tmp``): o que
+    ``_link_all_files`` liga."""
+    import os
+
+    rels: list[str] = []
+    for current, _, names in os.walk(root):
+        base = Path(current).relative_to(root)
+        rels.extend(
+            (base / name).as_posix() for name in names if not name.endswith(".tmp")
+        )
+    return rels
+
+
+def _current_data_files(rels: list[str]) -> list[str]:
+    """Os arquivos de dados (sem manifestos) que ``select_current`` escolheria."""
+    from quantilica.core.lake import MANIFEST_SIDECAR_SUFFIX, select_current
+
+    return [r for r in select_current(rels) if not r.endswith(MANIFEST_SIDECAR_SUFFIX)]
+
+
+def _link_all_files(source: Path, dest: Path, mode: str) -> dict[str, int]:
+    """Liga em ``dest`` todos os arquivos de ``source``, de todas as versões.
+
+    Mesmo recuo de ``materialize_view`` (hardlink, symlink, cópia). Ignora
+    ``*.tmp``. Devolve quantos arquivos entraram por modo e ``files`` no total.
+    """
+    import os
+    import shutil
+
+    chain = ["hardlink", "symlink", "copy"]
+    counts = {"hardlink": 0, "symlink": 0, "copy": 0, "files": 0}
+    for current, _, names in os.walk(source):
+        for name in sorted(names):
+            if name.endswith(".tmp"):
+                continue
+            src = Path(current) / name
+            dst = dest / src.relative_to(source)
+            counts["files"] += 1
+            if dst.exists() and os.path.samefile(src, dst):
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dst.with_name(f".{dst.name}.{os.getpid()}.tmp")
+            for attempt in chain[chain.index(mode) :]:
+                tmp.unlink(missing_ok=True)
+                try:
+                    if attempt == "hardlink":
+                        os.link(src, tmp)
+                    elif attempt == "symlink":
+                        os.symlink(os.path.abspath(src), tmp)
+                    else:
+                        shutil.copy2(src, tmp)
+                except OSError:
+                    tmp.unlink(missing_ok=True)
+                    if attempt == "copy":
+                        raise
+                    continue
+                os.replace(tmp, dst)
+                counts[attempt] += 1
+                break
+    return counts
+
+
 def _warn_multiple_versions(input: Path, sources: list[str] | None) -> None:
     """Avisa em stderr quando uma fonte de ``--sources`` tem mais de uma versão
     do mesmo arquivo em ``input``.
@@ -79,7 +169,8 @@ def _warn_multiple_versions(input: Path, sources: list[str] | None) -> None:
     O build converte tudo o que está na entrada; ela deveria ser a visão
     vigente (``lake select``). Só avisa: não muda o que o build faz. Sem
     ``--sources`` não varre nada: seria percorrer o input inteiro (o lake todo)
-    só para avisar, e o build já lê essas pastas.
+    só para avisar, e o build já lê essas pastas. Fontes cujo conversor declara
+    ``selects_versions`` ficam de fora: elas recebem várias versões de propósito.
     """
     from quantilica.cli.vigente import superseded_versions
 
@@ -89,7 +180,7 @@ def _warn_multiple_versions(input: Path, sources: list[str] | None) -> None:
     old: list[str] = []
     for name in names:
         folder = input / name
-        if folder.is_dir():
+        if folder.is_dir() and not _selects_versions(name):
             old.extend(f"{name}/{rel}" for rel in superseded_versions(folder))
     if not old:
         return
@@ -183,7 +274,12 @@ def select(
         ),
     ] = None,
 ) -> None:
-    """Cria a visão vigente: só a versão mais recente de cada arquivo bruto."""
+    """Cria a visão vigente: só a versão mais recente de cada arquivo bruto.
+
+    Fontes cujo conversor instalado declara ``selects_versions`` (o conversor
+    escolhe a versão vigente por conta própria, como o antt) entram na visão
+    com todas as versões, sem seleção, e ``--exclude`` não vale para elas.
+    """
     try:
         from quantilica.core.lake import materialize_view
     except ImportError as exc:
@@ -193,11 +289,27 @@ def select(
         ) from None
 
     excluded = _read_list(exclude) if exclude is not None else None
+    own: list[str] = _self_selecting_sources(raw)
+    own_files: list[str] = []
+    for name in own:
+        own_files.extend(f"{name}/{rel}" for rel in _files_to_link(raw / name))
     try:
-        summary = materialize_view(raw, out, mode=mode.value, exclude=excluded)
+        summary = materialize_view(
+            raw,
+            out,
+            mode=mode.value,
+            # as fontes de seleção própria saem da seleção e entram inteiras abaixo
+            exclude=[*(excluded or []), *own_files] if own else excluded,
+        )
+        linked = (
+            {name: _link_all_files(raw / name, out / name, mode.value) for name in own}
+            if own
+            else {}
+        )
     except (ValueError, OSError) as exc:
         raise _fail(str(exc)) from exc
 
+    held_back = len(_current_data_files(own_files)) if own else 0
     console.print(f"[green]✓[/green] Visão em [dim]{out}[/dim]", highlight=False)
     typer.echo(f"  arquivos:   {summary.files}")
     typer.echo(
@@ -205,8 +317,13 @@ def select(
         f"copy={summary.copy}"
     )
     typer.echo(f"  mantidos:   {summary.kept}")
-    typer.echo(f"  excluídos:  {summary.excluded}")
+    typer.echo(f"  excluídos:  {max(summary.excluded - held_back, 0)}")
     typer.echo(f"  removidos:  {summary.removed}")
+    for name, counts in linked.items():
+        typer.echo(
+            f"  {name}: seleção própria do conversor, {counts['files']} arquivo(s) "
+            "de todas as versões (sem escolher a vigente)"
+        )
 
 
 @app.command("build")
