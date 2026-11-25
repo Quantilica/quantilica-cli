@@ -17,12 +17,15 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 import typer
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.markup import escape
+
+if TYPE_CHECKING:
+    from quantilica.core.lake import LinkMode as CoreLinkMode
 
 app = typer.Typer(
     help="Montar e auditar o lake: bruto local → select → build → audit.",
@@ -116,7 +119,8 @@ def _files_to_link(root: Path) -> list[str]:
 
 def _current_data_files(rels: list[str]) -> list[str]:
     """Os arquivos de dados (sem manifestos) que ``select_current`` escolheria."""
-    from quantilica.core.lake import MANIFEST_SIDECAR_SUFFIX, select_current
+    from quantilica.core.lake import select_current
+    from quantilica.core.manifests import MANIFEST_SIDECAR_SUFFIX
 
     return [r for r in select_current(rels) if not r.endswith(MANIFEST_SIDECAR_SUFFIX)]
 
@@ -228,7 +232,7 @@ def _own_source_exclusions(
     também, a regra do ledger (exclusão comum faz o mês sumir). O recurso é o da
     URL do manifesto; a "mais nova" é a do carimbo ``@AAAAMMDD`` do nome.
     """
-    from quantilica.core.lake import MANIFEST_SIDECAR_SUFFIX
+    from quantilica.core.manifests import MANIFEST_SIDECAR_SUFFIX
 
     digests: set[str] = set()
     paths: set[str] = set()
@@ -282,7 +286,7 @@ def _sync_all_files(
     """
     import os
 
-    from quantilica.core.lake import MANIFEST_SIDECAR_SUFFIX
+    from quantilica.core.manifests import MANIFEST_SIDECAR_SUFFIX
 
     drop = set(skip or ())
     drop |= {f"{rel}{MANIFEST_SIDECAR_SUFFIX}" for rel in drop}
@@ -377,7 +381,12 @@ def _select_with_own(
             elif text.startswith(prefix):
                 local.append(text[len(prefix) :])
         parts.append(
-            materialize_view(raw / name, out / name, mode=mode, exclude=local or None)
+            materialize_view(
+                raw / name,
+                out / name,
+                mode=cast("CoreLinkMode", mode),
+                exclude=local or None,
+            )
         )
     # pastas da visão que não são mais fonte do bruto
     if out.is_dir():

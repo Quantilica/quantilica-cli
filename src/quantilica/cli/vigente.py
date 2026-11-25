@@ -25,11 +25,8 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
-from quantilica.core.lake import (
-    MANIFEST_SIDECAR_SUFFIX,
-    materialize_view,
-    select_current,
-)
+from quantilica.core.lake import materialize_view, select_current
+from quantilica.core.manifests import MANIFEST_SIDECAR_SUFFIX
 
 SCRATCH_ENV = "QUANTILICA_LAKE_SCRATCH"
 _TEMP_SUFFIX = ".tmp"
