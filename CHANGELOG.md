@@ -9,11 +9,13 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ### Corrigido
 
-- `<fetcher> convert` e `<fetcher> pipeline` não entregam mais ao conversor todas as versões carimbadas do mesmo arquivo bruto (`nome@AAAAMMDD.ext`). Quando a pasta de entrada tem mais de uma versão de algum arquivo, o conversor recebe uma visão temporária só com a vigente (a escolha de `quantilica.core.lake.select_current`, montada por `materialize_view` com links, sem copiar dados), e a visão é removida ao final, também em erro. Ela fica em `QUANTILICA_LAKE_SCRATCH` ou, sem a variável, no diretório temporário do sistema (`TMPDIR`). Sem nenhum arquivo com mais de uma versão, o conversor recebe a pasta original, como antes. Novo módulo `quantilica.cli.vigente` (`vigente_view`, `superseded_versions`).
+- `<fetcher> convert` e `<fetcher> pipeline` não entregam mais ao conversor todas as versões carimbadas do mesmo arquivo bruto (`nome@AAAAMMDD.ext`). Quando a pasta de entrada tem mais de uma versão de algum arquivo, o conversor recebe uma visão temporária só com a vigente (a escolha de `quantilica.core.lake.select_current`, montada por `materialize_view` com hardlinks ou symlinks), e a visão é removida ao final, também em erro. Ela fica em `QUANTILICA_LAKE_SCRATCH` ou, sem a variável, no diretório temporário do sistema (`TMPDIR`). Sem nenhum arquivo com mais de uma versão, o conversor recebe a pasta original, como antes. A visão nunca copia dados: se o scratch não aceita link a partir do bruto, o comando sai com erro claro, sugerindo apontar `QUANTILICA_LAKE_SCRATCH` para o volume do bruto ou passar a pasta da visão vigente pronta (`quantilica lake select`). Visões `quantilica-vigente-*` deixadas por um processo morto (o `owner.json` de cada visão guarda o pid e o host) são removidas na próxima montagem. Novo módulo `quantilica.cli.vigente` (`vigente_view`, `superseded_versions`, `converter_selects_versions`).
+- O nome da pasta da visão é o do caminho recebido (`absolute()`), não o do destino de um link simbólico.
 
 ### Adicionado
 
-- `quantilica lake build` avisa em `stderr` quando `--input` tem mais de uma versão do mesmo arquivo (quantidade e exemplos), lembrando que a entrada deveria ser a visão vigente de `quantilica lake select`. Só avisa: o comportamento do build não muda.
+- Conversor que escolhe a versão vigente por conta própria (por exemplo, pelo recurso do manifesto em vez do nome do arquivo) declara `selects_versions = True` na função registrada em `command_convert`/`command_pipeline` (ou no objeto do entry point `quantilica.lake`) e recebe a pasta original, sem a visão por nome.
+- `quantilica lake build --sources ...` avisa em `stderr` quando uma das fontes tem mais de uma versão do mesmo arquivo (quantidade e exemplos), lembrando que a entrada deveria ser a visão vigente de `quantilica lake select`. Só avisa: o comportamento do build não muda. Sem `--sources` não avisa (evitaria varrer o input inteiro, o lake todo).
 
 ## [0.28.0] - 2026-11-24
 

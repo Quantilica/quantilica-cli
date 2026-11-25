@@ -517,7 +517,7 @@ def test_build_warns_when_input_has_several_versions(
     corpus, tmp_path: Path, fake_engine
 ) -> None:
     # `raw` guarda @20260101 e @20261021 do mesmo arquivo: não é a visão vigente.
-    args = _build_args(corpus, tmp_path)
+    args = _build_args(corpus, tmp_path, "--sources", "alfa")
     args[args.index("--input") + 1] = str(corpus.raw)
     result = runner.invoke(app, args)
     text = _plain(result.output)
@@ -525,6 +525,22 @@ def test_build_warns_when_input_has_several_versions(
     assert "alfa/vendas/vendas_2025@20260101.csv" in text
     assert "lake select" in text
     assert result.exit_code == 0, result.output  # só avisa
+
+
+def test_build_without_sources_does_not_scan_the_input(
+    corpus, tmp_path: Path, fake_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from quantilica.cli import vigente
+
+    def boom(_root: Path) -> list[str]:
+        raise AssertionError("não deveria varrer o input")
+
+    monkeypatch.setattr(vigente, "superseded_versions", boom)
+    args = _build_args(corpus, tmp_path)
+    args[args.index("--input") + 1] = str(corpus.raw)
+    result = runner.invoke(app, args)
+    assert "Aviso" not in _plain(result.output)
+    assert result.exit_code == 0, result.output
 
 
 def test_build_does_not_warn_for_the_current_view(

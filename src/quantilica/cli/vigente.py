@@ -5,14 +5,23 @@ recebe a pasta inteira converteria todas elas. ``vigente_view`` entrega ao
 conversor uma árvore só com a versão vigente de cada arquivo (a escolha é de
 ``quantilica.core.lake.select_current``), montada com links numa pasta
 temporária e removida ao final, inclusive em erro.
+
+A visão é opcional por conversor. Um conversor que escolhe a versão vigente por
+conta própria (por exemplo, pelo recurso do manifesto, e não pelo nome do
+arquivo) declara ``selects_versions = True`` no objeto do entry point
+``quantilica.lake`` e na função que o fetcher registra em ``convert``; quem
+chama então lhe entrega a pasta original (``converter_selects_versions``).
 """
 
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import shutil
+import socket
 import tempfile
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -25,6 +34,28 @@ from quantilica.core.lake import (
 SCRATCH_ENV = "QUANTILICA_LAKE_SCRATCH"
 _TEMP_SUFFIX = ".tmp"
 _VIEW_PREFIX = "quantilica-vigente-"
+_OWNER_FILE = "owner.json"
+_ORPHAN_SECONDS = 7 * 24 * 3600  # visão sem owner.json só some depois disso
+
+
+class ViewUnavailableError(RuntimeError):
+    """A visão vigente não pôde ser montada sem copiar dados."""
+
+
+def converter_selects_versions(*candidates: object) -> bool:
+    """Se algum dos objetos declara ``selects_versions = True``.
+
+    Passe a função registrada em ``convert`` e/ou o objeto do entry point
+    ``quantilica.lake``; um método ligado também vale pelo objeto dono.
+    """
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        owner = getattr(candidate, "__self__", None)
+        for obj in (candidate, owner):
+            if obj is not None and getattr(obj, "selects_versions", False) is True:
+                return True
+    return False
 
 
 def _relative_files(root: Path) -> list[str]:
@@ -62,27 +93,148 @@ def scratch_base() -> Path:
     return Path(tempfile.gettempdir())
 
 
+def _pid_alive(pid: int) -> bool:
+    """Se ``pid`` é um processo vivo neste host.
+
+    No Windows ``os.kill(pid, 0)`` equivale a Ctrl+C e interromperia o grupo de
+    processos do console: lá a consulta é pelo ``OpenProcess``.
+    """
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        return _pid_alive_windows(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:  # PermissionError: existe, é de outro usuário
+        return True
+    return True
+
+
+def _pid_alive_windows(pid: int) -> bool:  # pragma: no cover - só no Windows
+    import ctypes
+    from ctypes import wintypes
+
+    query_limited_information = 0x1000
+    still_active = 259
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # pyright: ignore[reportAttributeAccessIssue]
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = k32.OpenProcess(query_limited_information, False, pid)
+    if not handle:
+        return ctypes.get_last_error() == 5  # pyright: ignore[reportAttributeAccessIssue]
+    try:
+        code = wintypes.DWORD()
+        if not k32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True
+        return code.value == still_active
+    finally:
+        k32.CloseHandle(handle)
+
+
+def _is_orphan(entry: Path, now: float) -> bool:
+    """Visão deixada por um processo que não existe mais neste host.
+
+    Com ``owner.json``: o pid dono (do mesmo host) está morto. Sem ele (visão de
+    uma versão anterior, ou criada neste instante e ainda sem o arquivo): só
+    depois de 7 dias. Visão de outro host ou de processo vivo fica.
+    """
+    try:
+        try:
+            owner = json.loads((entry / _OWNER_FILE).read_text())
+            pid, host = int(owner["pid"]), str(owner["hostname"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return now - entry.stat().st_mtime >= _ORPHAN_SECONDS
+        return host == socket.gethostname() and not _pid_alive(pid)
+    except OSError:
+        return False
+
+
+def remove_orphan_views(base: Path) -> int:
+    """Remove de ``base`` as visões ``quantilica-vigente-*`` de processos mortos.
+
+    Devolve quantas removeu. Só mexe nas pastas deste prefixo, e ``rmtree`` não
+    segue links: os arquivos do bruto nunca são tocados.
+    """
+    if not base.is_dir():
+        return 0
+    now = time.time()
+    removed = 0
+    for entry in base.glob(f"{_VIEW_PREFIX}*"):
+        if entry.is_dir() and not entry.is_symlink() and _is_orphan(entry, now):
+            shutil.rmtree(entry, ignore_errors=True)
+            removed += 1
+    return removed
+
+
+def _first_current_file(root: Path) -> Path | None:
+    current = select_current(_relative_files(root))
+    return root / current[0] if current else None
+
+
+def _can_link(source: Path | None, folder: Path) -> bool:
+    """Se dá para ligar (hardlink ou symlink) arquivos de ``source`` em ``folder``."""
+    if source is None:
+        return True
+    probe = folder / ".probe"
+    try:
+        for make in (os.link, os.symlink):
+            try:
+                make(source, probe)
+            except OSError:
+                continue
+            return True
+        return False
+    finally:
+        probe.unlink(missing_ok=True)
+
+
 @contextlib.contextmanager
-def vigente_view(root: Path) -> Iterator[tuple[Path, int]]:
+def vigente_view(root: Path, *, skip: bool = False) -> Iterator[tuple[Path, int]]:
     """Entrega ``(pasta, n)``: a pasta que o conversor deve ler e quantos
     arquivos de versões antigas ela deixa de fora.
 
-    Sem nenhum arquivo com mais de uma versão devolve ``root`` e ``0``, sem
-    montar nada. Caso contrário monta a visão (hardlink, depois symlink, e só
-    então cópia, que é o recurso do próprio ``materialize_view``) e a remove ao
-    sair, também quando o bloco levanta.
+    ``skip=True`` (conversor que declara ``selects_versions``) devolve ``root`` e
+    ``0`` sem olhar a pasta. Sem nenhum arquivo com mais de uma versão devolve
+    ``root`` e ``0``, sem montar nada. Caso contrário monta a visão com
+    hardlinks ou symlinks e a remove ao sair, também quando o bloco levanta.
+    Nunca copia dados: se o scratch não aceita link (volume diferente e sem
+    privilégio de symlink) levanta ``ViewUnavailableError``; aponte
+    ``QUANTILICA_LAKE_SCRATCH`` para o volume do bruto, ou passe a pasta da
+    visão vigente pronta (``quantilica lake select``).
     """
-    if not root.is_dir():
+    if skip or not root.is_dir():
         yield root, 0
         return
     old = superseded_versions(root)
     if not old:
         yield root, 0
         return
-    tmp = Path(tempfile.mkdtemp(prefix=_VIEW_PREFIX, dir=scratch_base()))
+    base = scratch_base()
+    remove_orphan_views(base)
+    tmp = Path(tempfile.mkdtemp(prefix=_VIEW_PREFIX, dir=base))
     try:
-        view = tmp / (root.resolve().name or "bruto")
-        materialize_view(root, view)
+        (tmp / _OWNER_FILE).write_text(
+            json.dumps({"pid": os.getpid(), "hostname": socket.gethostname()})
+        )
+        if not _can_link(_first_current_file(root), tmp):
+            raise ViewUnavailableError(
+                f"não foi possível ligar (hardlink ou symlink) os arquivos de {root} "
+                f"em {base}, e a visão vigente não copia dados. Aponte "
+                f"{SCRATCH_ENV} para um volume que aceite link a partir do bruto, "
+                "ou passe a pasta da visão vigente pronta ('quantilica lake select')."
+            )
+        view = tmp / "visao" / (root.absolute().name or "bruto")
+        summary = materialize_view(root, view)
+        if summary.copy:  # pragma: no cover - a sonda acima já falharia antes
+            raise ViewUnavailableError(
+                f"a visão vigente de {root} precisaria copiar {summary.copy} "
+                "arquivo(s); passe a pasta da visão vigente pronta "
+                "('quantilica lake select')."
+            )
         yield view, len(old)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

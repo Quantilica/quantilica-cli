@@ -73,16 +73,19 @@ def _split_sources(value: str | None) -> list[str] | None:
 
 
 def _warn_multiple_versions(input: Path, sources: list[str] | None) -> None:
-    """Avisa em stderr quando ``input`` tem mais de uma versão do mesmo arquivo.
+    """Avisa em stderr quando uma fonte de ``--sources`` tem mais de uma versão
+    do mesmo arquivo em ``input``.
 
     O build converte tudo o que está na entrada; ela deveria ser a visão
-    vigente (``lake select``). Só avisa: não muda o que o build faz.
+    vigente (``lake select``). Só avisa: não muda o que o build faz. Sem
+    ``--sources`` não varre nada: seria percorrer o input inteiro (o lake todo)
+    só para avisar, e o build já lê essas pastas.
     """
     from quantilica.cli.vigente import superseded_versions
 
+    if not sources:
+        return
     names = sources
-    if names is None:
-        names = sorted(p.name for p in input.iterdir() if p.is_dir())
     old: list[str] = []
     for name in names:
         folder = input / name

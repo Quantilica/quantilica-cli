@@ -60,7 +60,11 @@ from quantilica.cli.ui import (
     make_download_progress,
     setup_rich_logging,
 )
-from quantilica.cli.vigente import vigente_view
+from quantilica.cli.vigente import (
+    ViewUnavailableError,
+    converter_selects_versions,
+    vigente_view,
+)
 
 logger = get_logger(__name__)
 
@@ -682,14 +686,22 @@ class FetcherApp:
                     )
                     raise typer.Exit(2)
         # O conversor lê só a versão vigente de cada arquivo bruto, nunca todas
-        # as versões carimbadas da pasta.
-        with vigente_view(input) as (source, ignored):
-            if ignored:
-                get_console().print(
-                    f"[dim]Bruto com versões antigas: {ignored} arquivo(s) fora "
-                    "da conversão (só a versão vigente é lida).[/dim]"
-                )
-            return func(source, lake, **kwargs)
+        # as versões carimbadas da pasta. Quem escolhe a vigente por conta própria
+        # (``selects_versions = True``) recebe a pasta original.
+        try:
+            with vigente_view(input, skip=converter_selects_versions(func)) as (
+                source,
+                ignored,
+            ):
+                if ignored:
+                    get_console().print(
+                        f"[dim]Bruto com versões antigas: {ignored} arquivo(s) fora "
+                        "da conversão (só a versão vigente é lida).[/dim]"
+                    )
+                return func(source, lake, **kwargs)
+        except ViewUnavailableError as exc:
+            get_console().print(f"[red]Erro:[/red] {escape(str(exc))}")
+            raise typer.Exit(1) from None
 
     @staticmethod
     def _convert_counts(result: Any) -> dict[str, Any] | None:

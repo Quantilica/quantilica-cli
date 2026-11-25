@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import json
 import os
+import socket
+import time
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
-from quantilica.cli.vigente import superseded_versions, vigente_view
+from quantilica.cli import vigente as vigente_mod
+from quantilica.cli.vigente import (
+    ViewUnavailableError,
+    converter_selects_versions,
+    remove_orphan_views,
+    superseded_versions,
+    vigente_view,
+)
 from tests.test_sdk import _grouped, make_app
 
 runner = CliRunner()
@@ -65,7 +75,7 @@ def test_view_has_only_the_current_version_and_is_removed(
     with vigente_view(raw) as (source, ignored):
         assert source != raw
         assert source.name == raw.name
-        assert source.parent.parent == scratch
+        assert source.parent.parent.parent == scratch
         assert ignored == 1
         assert _files(source) == [
             "dados/a_2025@20261021.csv",
@@ -207,3 +217,168 @@ def test_pipeline_converts_the_current_view(
     assert result.exit_code == 0, result.output
     assert seen == [["dados/a_2025@20261021.csv", "dados/b_2025@20261021.csv"]]
     assert list(scratch.iterdir()) == []
+
+
+def test_converter_that_selects_its_own_versions_gets_the_original_folder(
+    tmp_path: Path, scratch: Path
+) -> None:
+    raw = _raw(tmp_path, TWO_VERSIONS)
+    seen: list[dict] = []
+    app = make_app()
+
+    @app.command_convert
+    def conv(input: Path, lake: Path) -> None:
+        seen.append({"input": input, "files": _files(input)})
+
+    conv.selects_versions = True  # type: ignore[attr-defined]
+    result = runner.invoke(
+        _grouped(app.app),
+        ["fd", "convert", "-i", str(raw), "--lake", str(tmp_path / "lake")],
+    )
+    assert result.exit_code == 0, result.output
+    assert seen[0]["input"] == raw
+    assert seen[0]["files"] == sorted(f"dados/{n}" for n in TWO_VERSIONS)
+    assert not scratch.exists() or list(scratch.iterdir()) == []
+
+
+def test_pipeline_with_a_self_selecting_converter_gets_the_original_folder(
+    tmp_path: Path, scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw = _raw(tmp_path, TWO_VERSIONS)
+    app = make_app()
+    seen: list[list[str]] = []
+    monkeypatch.setattr(
+        app, "download_datasets", lambda entries, out, workers=4: (1, 1, [])
+    )
+
+    @app.command_pipeline
+    def conv(data_dir: Path, parquet_dir: Path) -> None:
+        seen.append(_files(data_dir))
+
+    conv.selects_versions = True  # type: ignore[attr-defined]
+    result = runner.invoke(
+        _grouped(app.app),
+        ["fd", "pipeline", "exp", "-o", str(raw), "--parquet-dir", str(tmp_path / "p")],
+    )
+    assert result.exit_code == 0, result.output
+    assert seen == [sorted(f"dados/{n}" for n in TWO_VERSIONS)]
+
+
+def test_converter_selects_versions_reads_the_declaration() -> None:
+    class Declares:
+        selects_versions = True
+
+        def convert(self) -> None: ...
+
+    class Silent:
+        def convert(self) -> None: ...
+
+    assert converter_selects_versions(Declares())
+    assert converter_selects_versions(Declares().convert)  # método ligado: pelo dono
+    assert not converter_selects_versions(Silent(), Silent().convert, None)
+    assert not converter_selects_versions(lambda: None)
+
+
+def test_skip_passes_the_original_folder(tmp_path: Path, scratch: Path) -> None:
+    raw = _raw(tmp_path, TWO_VERSIONS)
+    with vigente_view(raw, skip=True) as (source, ignored):
+        assert (source, ignored) == (raw, 0)
+
+
+def test_view_uses_the_absolute_name_not_the_symlink_target(
+    tmp_path: Path, scratch: Path
+) -> None:
+    raw = _raw(tmp_path, TWO_VERSIONS)
+    alias = tmp_path / "apelido"
+    alias.symlink_to(raw, target_is_directory=True)
+    with vigente_view(alias) as (source, _):
+        assert source.name == "apelido"
+
+
+def _owned(base: Path, name: str, *, pid: int, host: str | None = None) -> Path:
+    folder = base / f"quantilica-vigente-{name}"
+    (folder / "visao").mkdir(parents=True)
+    owner = {"pid": pid, "hostname": host or socket.gethostname()}
+    (folder / "owner.json").write_text(json.dumps(owner))
+    return folder
+
+
+def test_view_records_its_owner(tmp_path: Path, scratch: Path) -> None:
+    raw = _raw(tmp_path, TWO_VERSIONS)
+    with vigente_view(raw) as (source, _):
+        owner = json.loads((source.parent.parent / "owner.json").read_text())
+        assert owner == {"pid": os.getpid(), "hostname": socket.gethostname()}
+
+
+def test_orphan_views_of_dead_processes_are_removed(
+    tmp_path: Path, scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scratch.mkdir()
+    monkeypatch.setattr(vigente_mod, "_pid_alive", lambda pid: pid == 111)
+    dead = _owned(scratch, "morto", pid=222)
+    alive = _owned(scratch, "vivo", pid=111)
+    other_host = _owned(scratch, "outro-host", pid=222, host="outra-maquina")
+    foreign = scratch / "lake-stage-xyz"  # de outro prefixo: nunca é tocado
+    foreign.mkdir()
+    raw = _raw(tmp_path, TWO_VERSIONS)
+    with vigente_view(raw):
+        assert not dead.exists()
+        assert alive.exists() and other_host.exists() and foreign.exists()
+    assert _files(raw) == sorted(f"dados/{n}" for n in TWO_VERSIONS)
+
+
+def test_orphan_view_without_owner_waits_seven_days(scratch: Path) -> None:
+    scratch.mkdir()
+    fresh = scratch / "quantilica-vigente-novo"
+    old = scratch / "quantilica-vigente-velho"
+    fresh.mkdir()
+    old.mkdir()
+    past = time.time() - 8 * 24 * 3600
+    os.utime(old, (past, past))
+    assert remove_orphan_views(scratch) == 1
+    assert fresh.exists() and not old.exists()
+
+
+def test_orphan_cleanup_never_touches_the_raw_through_links(
+    tmp_path: Path, scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw = _raw(tmp_path, TWO_VERSIONS)
+    dead = _owned(scratch, "morto", pid=222)
+    (dead / "visao" / "a.csv").symlink_to(raw / "dados" / "a_2025@20261021.csv")
+    monkeypatch.setattr(vigente_mod, "_pid_alive", lambda pid: False)
+    assert remove_orphan_views(scratch) == 1
+    assert _files(raw) == sorted(f"dados/{n}" for n in TWO_VERSIONS)
+
+
+def test_refuses_to_copy_when_links_are_not_possible(
+    tmp_path: Path, scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw = _raw(tmp_path, TWO_VERSIONS)
+
+    def no_link(*_args: object, **_kwargs: object) -> None:
+        raise OSError("sem link")
+
+    monkeypatch.setattr(os, "link", no_link)
+    monkeypatch.setattr(os, "symlink", no_link)
+    with pytest.raises(ViewUnavailableError, match="lake select"):
+        with vigente_view(raw):
+            raise AssertionError("não deveria montar")
+    assert list(scratch.iterdir()) == []
+
+
+def test_convert_command_refusing_copy_is_a_clear_error(
+    tmp_path: Path, scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw = _raw(tmp_path, TWO_VERSIONS)
+
+    def no_link(*_args: object, **_kwargs: object) -> None:
+        raise OSError("sem link")
+
+    monkeypatch.setattr(os, "link", no_link)
+    monkeypatch.setattr(os, "symlink", no_link)
+    result = runner.invoke(
+        _grouped(_convert_app([]).app),
+        ["fd", "convert", "-i", str(raw), "--lake", str(tmp_path / "lake")],
+    )
+    assert result.exit_code == 1
+    assert "lake select" in " ".join(result.output.split())
