@@ -511,3 +511,24 @@ def test_build_progress_goes_to_stderr_not_stdout(
     assert "andamento-xyz" in result.stderr
     assert "andamento-xyz" not in result.stdout
     assert logging.getLogger("quantilica").propagate is True
+
+
+def test_build_warns_when_input_has_several_versions(
+    corpus, tmp_path: Path, fake_engine
+) -> None:
+    # `raw` guarda @20260101 e @20261021 do mesmo arquivo: não é a visão vigente.
+    args = _build_args(corpus, tmp_path)
+    args[args.index("--input") + 1] = str(corpus.raw)
+    result = runner.invoke(app, args)
+    text = _plain(result.output)
+    assert "Aviso" in text
+    assert "alfa/vendas/vendas_2025@20260101.csv" in text
+    assert "lake select" in text
+    assert result.exit_code == 0, result.output  # só avisa
+
+
+def test_build_does_not_warn_for_the_current_view(
+    corpus, tmp_path: Path, fake_engine
+) -> None:
+    result = runner.invoke(app, _build_args(corpus, tmp_path))
+    assert "Aviso" not in _plain(result.output)

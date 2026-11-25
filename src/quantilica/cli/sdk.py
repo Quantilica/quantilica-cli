@@ -60,6 +60,7 @@ from quantilica.cli.ui import (
     make_download_progress,
     setup_rich_logging,
 )
+from quantilica.cli.vigente import vigente_view
 
 logger = get_logger(__name__)
 
@@ -665,19 +666,30 @@ class FetcherApp:
         try:
             params = inspect.signature(func).parameters
         except (TypeError, ValueError):  # pragma: no cover - builtins/C callables
-            return func(input, lake)
-        var_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
-        wanted = {"dataset": dataset or None, "force": force or None}
+            params = None
         kwargs: dict[str, Any] = {}
-        for name, value in wanted.items():
-            if name in params or var_kw:
-                kwargs[name] = dataset if name == "dataset" else force
-            elif value is not None:
+        if params is not None:
+            var_kw = any(
+                p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+            )
+            wanted = {"dataset": dataset or None, "force": force or None}
+            for name, value in wanted.items():
+                if name in params or var_kw:
+                    kwargs[name] = dataset if name == "dataset" else force
+                elif value is not None:
+                    get_console().print(
+                        f"[red]Erro:[/red] este conversor não suporta --{name}."
+                    )
+                    raise typer.Exit(2)
+        # O conversor lê só a versão vigente de cada arquivo bruto, nunca todas
+        # as versões carimbadas da pasta.
+        with vigente_view(input) as (source, ignored):
+            if ignored:
                 get_console().print(
-                    f"[red]Erro:[/red] este conversor não suporta --{name}."
+                    f"[dim]Bruto com versões antigas: {ignored} arquivo(s) fora "
+                    "da conversão (só a versão vigente é lida).[/dim]"
                 )
-                raise typer.Exit(2)
-        return func(input, lake, **kwargs)
+            return func(source, lake, **kwargs)
 
     @staticmethod
     def _convert_counts(result: Any) -> dict[str, Any] | None:

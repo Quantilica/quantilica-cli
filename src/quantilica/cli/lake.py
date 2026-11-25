@@ -72,6 +72,35 @@ def _split_sources(value: str | None) -> list[str] | None:
     return sources
 
 
+def _warn_multiple_versions(input: Path, sources: list[str] | None) -> None:
+    """Avisa em stderr quando ``input`` tem mais de uma versão do mesmo arquivo.
+
+    O build converte tudo o que está na entrada; ela deveria ser a visão
+    vigente (``lake select``). Só avisa: não muda o que o build faz.
+    """
+    from quantilica.cli.vigente import superseded_versions
+
+    names = sources
+    if names is None:
+        names = sorted(p.name for p in input.iterdir() if p.is_dir())
+    old: list[str] = []
+    for name in names:
+        folder = input / name
+        if folder.is_dir():
+            old.extend(f"{name}/{rel}" for rel in superseded_versions(folder))
+    if not old:
+        return
+    examples = ", ".join(old[:3]) + (", ..." if len(old) > 3 else "")
+    err_console.print(
+        f"[yellow]Aviso:[/yellow] {escape(str(input))} tem {len(old)} arquivo(s) "
+        "com versão mais nova do mesmo arquivo (por exemplo: "
+        f"{escape(examples)}). O build converte todos; a entrada deveria ser a "
+        "visão vigente: rode 'quantilica lake select' e use a pasta dela em "
+        "--input.",
+        highlight=False,
+    )
+
+
 def _read_list(path: Path) -> list[str]:
     """Lê um arquivo texto com um item por linha (vazias e ``#`` ignoradas)."""
     try:
@@ -281,6 +310,7 @@ def build(
         raise _missing_analytics("build", exc) from None
 
     wanted = _split_sources(sources)
+    _warn_multiple_versions(input, wanted)
     wanted_datasets = (
         [part.strip() for part in dataset.split(",") if part.strip()]
         if dataset

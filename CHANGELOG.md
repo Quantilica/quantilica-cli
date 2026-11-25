@@ -5,6 +5,16 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [Não lançado]
+
+### Corrigido
+
+- `<fetcher> convert` e `<fetcher> pipeline` não entregam mais ao conversor todas as versões carimbadas do mesmo arquivo bruto (`nome@AAAAMMDD.ext`). Quando a pasta de entrada tem mais de uma versão de algum arquivo, o conversor recebe uma visão temporária só com a vigente (a escolha de `quantilica.core.lake.select_current`, montada por `materialize_view` com links, sem copiar dados), e a visão é removida ao final, também em erro. Ela fica em `QUANTILICA_LAKE_SCRATCH` ou, sem a variável, no diretório temporário do sistema (`TMPDIR`). Sem nenhum arquivo com mais de uma versão, o conversor recebe a pasta original, como antes. Novo módulo `quantilica.cli.vigente` (`vigente_view`, `superseded_versions`).
+
+### Adicionado
+
+- `quantilica lake build` avisa em `stderr` quando `--input` tem mais de uma versão do mesmo arquivo (quantidade e exemplos), lembrando que a entrada deveria ser a visão vigente de `quantilica lake select`. Só avisa: o comportamento do build não muda.
+
 ## [0.28.0] - 2026-11-24
 
 ### Removido
