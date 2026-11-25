@@ -209,6 +209,16 @@ def _can_link(source: Path | None, folder: Path) -> bool:
         probe.unlink(missing_ok=True)
 
 
+def _overlaps(raw: Path, view: Path) -> bool:
+    """``raw`` e ``view`` são a mesma pasta ou uma contém a outra (já resolvidas)."""
+    raw_real, view_real = raw.resolve(), view.resolve()
+    return (
+        raw_real == view_real
+        or raw_real in view_real.parents
+        or view_real in raw_real.parents
+    )
+
+
 @contextlib.contextmanager
 def vigente_view(root: Path, *, skip: bool = False) -> Iterator[tuple[Path, int]]:
     """Entrega ``(pasta, n)``: a pasta que o conversor deve ler e quantos
@@ -247,14 +257,15 @@ def vigente_view(root: Path, *, skip: bool = False) -> Iterator[tuple[Path, int]
                 "('quantilica lake select')."
             )
         view = tmp / "visao" / (root.absolute().name or "bruto")
-        try:
-            summary = materialize_view(root, view)
-        except ValueError as exc:  # scratch dentro do bruto (ou o contrário)
+        # Sobreposição conferida aqui, às claras: um ValueError qualquer do
+        # materialize_view não pode ser mostrado como "scratch dentro do bruto".
+        if _overlaps(root, view):
             raise ViewUnavailableError(
                 f"a pasta de trabalho da visão vigente ({base}) se sobrepõe ao "
-                f"bruto ({root}): {exc} Aponte {SCRATCH_ENV} para uma pasta do "
-                "mesmo volume do bruto, mas fora da pasta do bruto."
-            ) from exc
+                f"bruto ({root}). Aponte {SCRATCH_ENV} para uma pasta do mesmo "
+                "volume do bruto, mas fora da pasta do bruto."
+            )
+        summary = materialize_view(root, view)
         if summary.copy:  # pragma: no cover - a sonda acima já falharia antes
             raise ViewUnavailableError(
                 f"a visão vigente de {root} precisaria copiar {summary.copy} "

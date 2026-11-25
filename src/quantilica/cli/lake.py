@@ -12,11 +12,12 @@ de modo que ``--help`` funciona sem ele.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from enum import StrEnum
-from pathlib import Path
-from typing import Annotated
+from pathlib import Path, PurePosixPath
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
@@ -120,46 +121,298 @@ def _current_data_files(rels: list[str]) -> list[str]:
     return [r for r in select_current(rels) if not r.endswith(MANIFEST_SIDECAR_SUFFIX)]
 
 
-def _link_all_files(source: Path, dest: Path, mode: str) -> dict[str, int]:
-    """Liga em ``dest`` todos os arquivos de ``source``, de todas as versões.
+_SHA256 = re.compile(r"[0-9a-fA-F]{64}")
+_NAME_STAMP = re.compile(r"@(\d{8})(?:T(\d{6}))?")
+_RESOURCE_UUID = re.compile(
+    r"/resource/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/",
+    re.IGNORECASE,
+)
 
-    Mesmo recuo de ``materialize_view`` (hardlink, symlink, cópia). Ignora
-    ``*.tmp``. Devolve quantos arquivos entraram por modo e ``files`` no total.
+
+def _in_place(src: Path, dst: Path) -> bool:
+    """``dst`` já é ``src``: o mesmo arquivo ou uma cópia dele (tamanho e mtime)."""
+    import os
+
+    if not os.path.lexists(dst):
+        return False
+    try:
+        if os.path.samefile(src, dst):
+            return True
+        if os.path.islink(dst) or not os.path.isfile(dst):
+            return False
+        a, b = src.stat(), dst.stat()
+    except OSError:
+        return False
+    # copy2 preserva o mtime; 2 s de folga para sistemas que o arredondam (FAT)
+    return a.st_size == b.st_size and abs(a.st_mtime_ns - b.st_mtime_ns) < 2_000_000_000
+
+
+def _place_file(src: Path, dst: Path, mode: str) -> str:
+    """Põe ``src`` em ``dst`` pelo ``mode``, recuando hardlink → symlink → cópia.
+
+    O vínculo nasce com nome temporário e é renomeado sobre ``dst``: quem lê
+    nunca vê o arquivo faltando. Devolve o modo que funcionou.
     """
     import os
     import shutil
 
     chain = ["hardlink", "symlink", "copy"]
-    counts = {"hardlink": 0, "symlink": 0, "copy": 0, "files": 0}
-    for current, _, names in os.walk(source):
-        for name in sorted(names):
-            if name.endswith(".tmp"):
-                continue
-            src = Path(current) / name
-            dst = dest / src.relative_to(source)
-            counts["files"] += 1
-            if dst.exists() and os.path.samefile(src, dst):
-                continue
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            tmp = dst.with_name(f".{dst.name}.{os.getpid()}.tmp")
-            for attempt in chain[chain.index(mode) :]:
-                tmp.unlink(missing_ok=True)
-                try:
-                    if attempt == "hardlink":
-                        os.link(src, tmp)
-                    elif attempt == "symlink":
-                        os.symlink(os.path.abspath(src), tmp)
-                    else:
-                        shutil.copy2(src, tmp)
-                except OSError:
-                    tmp.unlink(missing_ok=True)
-                    if attempt == "copy":
-                        raise
-                    continue
-                os.replace(tmp, dst)
-                counts[attempt] += 1
-                break
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.is_dir() and not dst.is_symlink():
+        shutil.rmtree(dst)
+    tmp = dst.with_name(f".{dst.name}.{os.getpid()}.tmp")
+    for attempt in chain[chain.index(mode) :]:
+        tmp.unlink(missing_ok=True)
+        try:
+            if attempt == "hardlink":
+                os.link(src, tmp)
+            elif attempt == "symlink":
+                os.symlink(os.path.abspath(src), tmp)
+            else:
+                shutil.copy2(src, tmp)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            if attempt == "copy":
+                raise
+            continue
+        os.replace(tmp, dst)
+        return attempt
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _read_manifest_url_sha(path: Path) -> tuple[str, str]:
+    """``(url, sha256)`` do manifesto ao lado de ``path``; vazios sem manifesto."""
+    from quantilica.core.manifests import read_manifest_sidecar
+
+    manifest = read_manifest_sidecar(path)
+    if manifest is None:
+        return "", ""
+    return (manifest.url or "").strip(), (manifest.sha256 or "").lower()
+
+
+def _resource_identity(rel: str, url: str) -> tuple[str, str]:
+    """Identidade do recurso de uma versão (a mesma regra do conversor de seleção
+    própria e do ledger): na mesma pasta, o id do recurso no CKAN (da URL) ou a
+    URL sem consulta; sem URL, o nome sem carimbo."""
+    from urllib.parse import urlsplit
+
+    from quantilica.core.lake import file_key
+
+    folder = PurePosixPath(rel).parent.as_posix()
+    if not url:
+        return folder, "n:" + file_key(PurePosixPath(rel).name).lower()
+    match = _RESOURCE_UUID.search(url)
+    if match:
+        return folder, "r:" + match[1].lower()
+    parts = urlsplit(url)
+    return folder, (
+        f"u:{parts.scheme.lower()}://{parts.netloc.lower()}{parts.path.rstrip('/')}"
+    )
+
+
+def _name_stamp(rel: str) -> str:
+    match = _NAME_STAMP.search(PurePosixPath(rel).name)
+    return f"{match[1]}{match[2] or '000000'}" if match else ""
+
+
+def _own_source_exclusions(
+    root: Path, name: str, rels: list[str], exclude: list[str]
+) -> tuple[set[str], set[str]]:
+    """Exclusões de ``--exclude`` numa fonte de seleção própria.
+
+    Devolve ``(excluídos, anteriores)``: os arquivos de dados que o ``--exclude``
+    aponta (caminho ``<fonte>/<rel>`` ou sha256) e as versões anteriores do mesmo
+    recurso que saem junto. Como o conversor converte a versão mais nova de cada
+    recurso entre as que estão na visão, excluir a mais nova (todas as versões do
+    carimbo mais novo) traria a anterior de volta; então as anteriores saem
+    também, a regra do ledger (exclusão comum faz o mês sumir). O recurso é o da
+    URL do manifesto; a "mais nova" é a do carimbo ``@AAAAMMDD`` do nome.
+    """
+    from quantilica.core.lake import MANIFEST_SIDECAR_SUFFIX
+
+    digests: set[str] = set()
+    paths: set[str] = set()
+    prefix = f"{name}/"
+    for entry in exclude:
+        text = entry.strip().replace("\\", "/")
+        if _SHA256.fullmatch(text):
+            digests.add(text.lower())
+        elif text.startswith(prefix):
+            paths.add(PurePosixPath(text[len(prefix) :]).as_posix())
+    if not digests and not paths:
+        return set(), set()
+    data = [r for r in rels if not r.endswith(MANIFEST_SIDECAR_SUFFIX)]
+    info = {r: _read_manifest_url_sha(root / r) for r in data}
+    excluded: set[str] = set()
+    for rel in data:
+        sha = info[rel][1]
+        if digests and not sha:
+            from quantilica.core.files import sha256_file
+
+            sha = sha256_file(root / rel).lower()
+        if rel in paths or (sha and sha in digests):
+            excluded.add(rel)
+    if not excluded:
+        return set(), set()
+    groups: dict[tuple[str, str], list[str]] = {}
+    for rel in data:
+        groups.setdefault(_resource_identity(rel, info[rel][0]), []).append(rel)
+    behind: set[str] = set()
+    for members in groups.values():
+        if not excluded.intersection(members):
+            continue
+        newest = max(_name_stamp(r) for r in members)
+        top = [r for r in members if _name_stamp(r) == newest]
+        if all(r in excluded for r in top):
+            behind.update(r for r in members if _name_stamp(r) != newest)
+    return excluded, behind - excluded
+
+
+def _sync_all_files(
+    source: Path, dest: Path, mode: str, skip: set[str] | None = None
+) -> dict[str, int]:
+    """Sincroniza ``dest`` com todos os arquivos de ``source``, de todas as versões.
+
+    Incremental: liga o que falta, mantém o que já está no lugar (o mesmo
+    arquivo, ou uma cópia de mesmo tamanho e mtime) e remove só o que sumiu do
+    bruto (ou entrou em ``skip``, junto do manifesto), mais as pastas que ficaram
+    vazias. Nunca apaga a pasta para recriá-la. Mesmo recuo de
+    ``materialize_view`` (hardlink, symlink, cópia); ignora ``*.tmp``. Devolve
+    ``files`` (total na pasta), um contador por modo, ``kept`` e ``removed``.
+    """
+    import os
+
+    from quantilica.core.lake import MANIFEST_SIDECAR_SUFFIX
+
+    drop = set(skip or ())
+    drop |= {f"{rel}{MANIFEST_SIDECAR_SUFFIX}" for rel in drop}
+    wanted = [rel for rel in _files_to_link(source) if rel not in drop]
+    counts = {"hardlink": 0, "symlink": 0, "copy": 0, "kept": 0, "removed": 0}
+    for rel in sorted(wanted):
+        src, dst = source / rel, dest / rel
+        if _in_place(src, dst):
+            counts["kept"] += 1
+        else:
+            counts[_place_file(src, dst, mode)] += 1
+    counts["files"] = len(wanted)
+    keep = set(wanted)
+    if dest.is_dir():
+        for current, dirs, names in os.walk(dest, topdown=False):
+            base = Path(current).relative_to(dest)
+            for entry in names:
+                if (base / entry).as_posix() not in keep:
+                    (Path(current) / entry).unlink()
+                    counts["removed"] += 1
+            for entry in dirs:
+                directory = Path(current) / entry
+                if directory.is_symlink():
+                    directory.unlink()
+                    counts["removed"] += 1
+                else:
+                    try:
+                        directory.rmdir()
+                    except OSError:  # não vazia: guarda parte da visão
+                        pass
     return counts
+
+
+def _check_no_overlap(raw: Path, out: Path) -> None:
+    """``raw`` e ``out`` não podem ser a mesma pasta nem uma conter a outra."""
+    raw_real, out_real = raw.resolve(), out.resolve()
+    if (
+        raw_real == out_real
+        or raw_real in out_real.parents
+        or out_real in raw_real.parents
+    ):
+        raise ValueError(f"raw ({raw}) and out ({out}) must not overlap.")
+
+
+def _add_summaries(parts: list[Any]) -> dict[str, int]:
+    keys = ("files", "hardlink", "symlink", "copy", "kept", "excluded", "removed")
+    return {k: sum(getattr(p, k) for p in parts) for k in keys}
+
+
+def _select_with_own(
+    raw: Path,
+    out: Path,
+    mode: str,
+    exclude: list[str],
+    own: list[str],
+) -> tuple[dict[str, int], dict[str, dict[str, int]]]:
+    """``lake select`` quando há fontes de seleção própria.
+
+    Cada pasta de fonte tem a sua rodada: as comuns passam por ``materialize_view``
+    (só a versão vigente de cada arquivo) e as de seleção própria são sincronizadas
+    de forma incremental (``_sync_all_files``). Assim ``out/<fonte>`` das últimas
+    nunca é apagado para ser recriado (nem some da visão durante a execução, nem
+    copia tudo de novo em ``--mode copy``). Entradas de ``--exclude`` valem nas duas;
+    nas de seleção própria, excluir a versão mais nova de um recurso tira também as
+    anteriores do mesmo recurso (``_own_source_exclusions``).
+    """
+    import os
+    import shutil
+
+    from quantilica.core.lake import materialize_view
+
+    sources = sorted(e.name for e in raw.iterdir() if e.is_dir())
+    stray = sorted(e.name for e in raw.iterdir() if not e.is_dir())
+    if stray:
+        err_console.print(
+            f"[yellow]Aviso:[/yellow] {len(stray)} arquivo(s) soltos na raiz de "
+            f"{escape(str(raw))} (por exemplo: {escape(', '.join(stray[:3]))}) ficam "
+            "fora da visão: o bruto é uma pasta por fonte.",
+            highlight=False,
+        )
+    parts: list[Any] = []
+    removed_extra = 0
+    for name in sources:
+        if name in own:
+            continue
+        prefix = f"{name}/"
+        local: list[str] = []
+        for entry in exclude:
+            text = entry.strip().replace("\\", "/")
+            if _SHA256.fullmatch(text):
+                local.append(text)
+            elif text.startswith(prefix):
+                local.append(text[len(prefix) :])
+        parts.append(
+            materialize_view(raw / name, out / name, mode=mode, exclude=local or None)
+        )
+    # pastas da visão que não são mais fonte do bruto
+    if out.is_dir():
+        for entry in out.iterdir():
+            if entry.name in sources:
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                removed_extra += sum(len(f) for _, _, f in os.walk(entry)) or 1
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+                removed_extra += 1
+    totals = _add_summaries(parts)
+    totals["removed"] += removed_extra
+    linked: dict[str, dict[str, int]] = {}
+    for name in own:
+        rels = _files_to_link(raw / name)
+        gone, behind = _own_source_exclusions(raw / name, name, rels, exclude)
+        counts = _sync_all_files(raw / name, out / name, mode, gone | behind)
+        counts["excluded"] = len(gone)
+        counts["behind"] = len(behind)
+        if behind:
+            examples = ", ".join(sorted(f"{name}/{r}" for r in behind)[:3])
+            err_console.print(
+                f"[yellow]Aviso:[/yellow] --exclude tirou a versão mais nova de "
+                f"{len(gone)} recurso(s) de {escape(name)}; {len(behind)} versão(ões) "
+                f"anterior(es) do mesmo recurso saem junto (por exemplo: "
+                f"{escape(examples)}), para o conversor não converter a anterior.",
+                highlight=False,
+            )
+        linked[name] = counts
+        for key in ("hardlink", "symlink", "copy", "kept", "removed", "files"):
+            totals[key] += counts[key]
+        totals["excluded"] += counts["excluded"]
+    return totals, linked
 
 
 def _warn_multiple_versions(input: Path, sources: list[str] | None) -> None:
@@ -278,7 +531,10 @@ def select(
 
     Fontes cujo conversor instalado declara ``selects_versions`` (o conversor
     escolhe a versão vigente por conta própria, como o antt) entram na visão
-    com todas as versões, sem seleção, e ``--exclude`` não vale para elas.
+    com todas as versões, sem seleção, sincronizadas de forma incremental (a
+    pasta delas na visão nunca é apagada para ser recriada). ``--exclude`` vale
+    para elas: excluir a versão mais nova de um recurso tira também as
+    anteriores do mesmo recurso.
     """
     try:
         from quantilica.core.lake import materialize_view
@@ -288,42 +544,37 @@ def select(
             f"({exc}). Atualize com: {CORE_HINT}"
         ) from None
 
-    excluded = _read_list(exclude) if exclude is not None else None
+    excluded = _read_list(exclude) if exclude is not None else []
     own: list[str] = _self_selecting_sources(raw)
-    own_files: list[str] = []
-    for name in own:
-        own_files.extend(f"{name}/{rel}" for rel in _files_to_link(raw / name))
+    linked: dict[str, dict[str, int]] = {}
     try:
-        summary = materialize_view(
-            raw,
-            out,
-            mode=mode.value,
-            # as fontes de seleção própria saem da seleção e entram inteiras abaixo
-            exclude=[*(excluded or []), *own_files] if own else excluded,
-        )
-        linked = (
-            {name: _link_all_files(raw / name, out / name, mode.value) for name in own}
-            if own
-            else {}
-        )
+        _check_no_overlap(raw, out)
+        if own:
+            totals, linked = _select_with_own(raw, out, mode.value, excluded, own)
+        else:
+            totals = _add_summaries(
+                [materialize_view(raw, out, mode=mode.value, exclude=excluded or None)]
+            )
     except (ValueError, OSError) as exc:
         raise _fail(str(exc)) from exc
 
-    held_back = len(_current_data_files(own_files)) if own else 0
     console.print(f"[green]✓[/green] Visão em [dim]{out}[/dim]", highlight=False)
-    typer.echo(f"  arquivos:   {summary.files}")
+    typer.echo(f"  arquivos:   {totals['files']}")
     typer.echo(
-        f"  criados:    hardlink={summary.hardlink} symlink={summary.symlink} "
-        f"copy={summary.copy}"
+        f"  criados:    hardlink={totals['hardlink']} symlink={totals['symlink']} "
+        f"copy={totals['copy']}"
     )
-    typer.echo(f"  mantidos:   {summary.kept}")
-    typer.echo(f"  excluídos:  {max(summary.excluded - held_back, 0)}")
-    typer.echo(f"  removidos:  {summary.removed}")
+    typer.echo(f"  mantidos:   {totals['kept']}")
+    typer.echo(f"  excluídos:  {totals['excluded']}")
+    typer.echo(f"  removidos:  {totals['removed']}")
     for name, counts in linked.items():
-        typer.echo(
+        line = (
             f"  {name}: seleção própria do conversor, {counts['files']} arquivo(s) "
             "de todas as versões (sem escolher a vigente)"
         )
+        if counts["behind"]:
+            line += f"; {counts['behind']} versão(ões) anterior(es) retirada(s)"
+        typer.echo(line)
 
 
 @app.command("build")

@@ -449,6 +449,24 @@ def test_scratch_inside_the_raw_is_a_clear_error(
     assert not list((raw / "scratch").iterdir())  # a visão foi removida
 
 
+def test_other_value_error_is_not_reported_as_overlap(
+    tmp_path: Path, scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Só a sobreposição conferida vira ViewUnavailableError; um ValueError de
+    outra origem sobe como está (não vira "scratch dentro do bruto")."""
+    raw = _raw(tmp_path, TWO_VERSIONS)
+
+    def boom(*_args, **_kwargs):
+        raise ValueError("outra causa")
+
+    monkeypatch.setattr("quantilica.cli.vigente.materialize_view", boom)
+    with pytest.raises(ValueError, match="outra causa") as info:
+        with vigente_view(raw):
+            raise AssertionError("não deveria montar")
+    assert not isinstance(info.value, ViewUnavailableError)
+    assert list(scratch.iterdir()) == []
+
+
 def test_convert_command_with_scratch_inside_the_raw_exits_1(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
