@@ -5,25 +5,40 @@ For full documentation, please visit [https://docs.quantilica.com](https://docs.
 
 ## Instalação
 
-```bash
-pip install quantilica-cli
-```
-
-Instale os fetchers desejados separadamente:
+O `quantilica-cli` é publicado no PyPI:
 
 ```bash
-pip install comex-fetcher inmet-fetcher rtn-fetcher
+uv add quantilica-cli
+# ou, como ferramenta global:
+uv tool install quantilica-cli
 ```
+
+Os fetchers não vêm com a CLI nem estão no PyPI: ficam no índice próprio da Quantilica e
+são instalados sob demanda, pela própria CLI:
+
+```bash
+quantilica list-sources --remote      # fontes conhecidas no registro público
+quantilica install comex                    # instala o comex-fetcher
+quantilica install comex --extra analysis   # com o extra que habilita convert e pipeline
+```
+
+`quantilica doctor` (e `quantilica sources doctor`) confere se o estado registrado bate com os
+plugins instalados, e `quantilica uninstall <fonte>` remove uma fonte.
 
 ## Uso
 
 ```bash
 quantilica --help
 quantilica list-sources
-quantilica comex sync 2024
-quantilica inmet sync 2020 2021
-quantilica td sync --dataset prices
+quantilica comex sync trade-exp
+quantilica inmet sync bdmep
+quantilica td sync prices
 ```
+
+`sync` recebe grupos (ou apelidos de grupo) de cada fetcher; sem argumento baixa todos, e
+`--dry-run` só lista o que baixaria. Outros comandos da CLI: `health` (sondas HTTP leves nas
+fontes), `manifests list|show|status` (inspeção local dos `*.manifest.json`),
+`registry export` e `docs check|schema|update` (documentação dos dados dos fetchers).
 
 ### Resumo da coleta em JSON
 
@@ -32,7 +47,7 @@ comando também imprime na linha `Concluído: X/Y arquivo(s) baixado(s)`, para q
 precisa deles sem ler texto (um agendador, um painel, um teste):
 
 ```bash
-quantilica comex sync 2024 --summary-json resumo.json
+quantilica comex sync trade-exp --summary-json resumo.json
 ```
 
 ```json
@@ -73,7 +88,7 @@ quantilica lake audit --lake /dados/lake --input /dados/vigente --json-file audi
 ```
 
 - `select` só precisa do `quantilica-core`. `build` e `audit` usam o
-  `quantilica-analytics`, que entra com `pip install "quantilica-cli[lake]"`; sem ele
+  `quantilica-analytics`, que entra com o extra `lake` (`uv add "quantilica-cli[lake]" --index https://index.quantilica.com/simple/`); sem ele
   esses dois comandos avisam o que instalar e saem com código 1.
 - `--exclude` e `--exceptions` aceitam um arquivo texto com um item por linha (linhas
   vazias e iniciadas por `#` são ignoradas): `sha256` ou caminho relativo no `select`,

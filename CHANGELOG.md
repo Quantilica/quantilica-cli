@@ -5,6 +5,12 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [Não lançado]
+
+### Corrigido
+
+- README: os exemplos de `sync` usavam argumentos que não existem (`comex sync 2024`, `inmet sync 2020 2021`, `td sync --dataset prices`); o `sync` recebe grupos ou apelidos de grupo (`comex sync trade-exp`, `inmet sync bdmep`, `td sync prices`). A instalação dos fetchers passa a ser `quantilica install <fonte>` (eles não estão no PyPI), e a do extra `lake` indica o índice próprio, de onde vem o `quantilica-analytics`. Entram os comandos que faltavam (`install`, `uninstall`, `doctor`, `health`, `manifests`, `registry`, `docs`).
+
 ## [0.29.0] - 2026-11-25
 
 ### Corrigido
