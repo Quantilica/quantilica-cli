@@ -7,6 +7,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+## [0.30.2] - 2026-11-28
+
 ### Adicionado
 
 - **Orçamento do HEAD de frescor por fetcher.** `FetcherApp` aceita `probe_timeout`, `probe_attempts`, `probe_retry_delay` e `probe_fail_fast_on_connect` (todos opcionais; sem eles nada muda). Valem para todo HEAD de frescor do host, o do `sync` (`_safe_head_date`, via `download_entry`) e o do `check` (`check_entry`, inclusive o GET `Range` que substitui um HEAD recusado), e só para eles: o download mantém o orçamento do cliente. Os três primeiros são tetos, e um valor menor em `QUANTILICA_HTTP_TIMEOUT`, `QUANTILICA_HTTP_ATTEMPTS` ou `QUANTILICA_HTTP_RETRY_DELAY` prevalece. O orçamento é fixado antes de o cliente ser aberto (o `HttpClient` do core monta o httpx no `__enter__`), num cliente próprio do HEAD que não mexe no do app (compartilhado entre as threads).
