@@ -97,6 +97,7 @@ def derive_fetcher_info(name: str) -> FetcherInfo:
 
 __all__ = [
     "EXIT_SYNC_PARTIAL",
+    "LISTING_ERROR_REASON",
     "PENDING_PUBLICATION_KEY",
     "PENDING_PUBLICATION_REASON",
     "SYNC_WORKERS_ENVVAR",
@@ -109,6 +110,7 @@ __all__ = [
     "SyncPlanItem",
     "default_client",
     "default_path_builder",
+    "plan_listing_errors",
     "make_resolve_groups",
 ]
 
@@ -126,6 +128,13 @@ EXIT_SYNC_PARTIAL = 3
 # pulada, com este motivo, e o ``check`` a devolve como ``skip-unavailable``.
 PENDING_PUBLICATION_KEY = "pending_publication"
 PENDING_PUBLICATION_REASON = "pending-publication"
+
+# Falha de descoberta vista pelo ``check``: o fetcher devolve, no lugar das entradas
+# que não conseguiu listar, um item ``skip-unavailable`` com este motivo e a causa
+# em ``entry["error"]`` (e ``entry["error_class"]``, se houver). O plano dos demais
+# itens é gravado e o ``check`` sai 0; o ``sync --from-plan`` conta cada item como
+# erro (saída 3 se algo baixou, 1 se nada).
+LISTING_ERROR_REASON = "listing-error"
 
 # Variável de ambiente que define ``--workers`` do ``sync``/``pipeline`` sem
 # argumento extra na linha de comando (um agendador nem sempre consegue passar flags). A flag
@@ -438,6 +447,28 @@ class CheckPlan:
         except json.JSONDecodeError as exc:
             raise ValueError(f"not a check plan: invalid JSON ({exc})") from exc
         return cls.from_dict(data)
+
+
+def plan_listing_errors(plan: CheckPlan) -> list[tuple[str, str]]:
+    """Falhas de descoberta do plano, como pares ``(id, mensagem)`` de erro do sync.
+
+    Um item ``skip-unavailable`` com motivo ``listing-error`` é a falha de
+    listagem que o ``check`` registrou; a mensagem é ``<error_class>: <error>``
+    (ou só o ``error``) da entrada. Sem texto na entrada, cita a URL do item.
+    """
+    found: list[tuple[str, str]] = []
+    for item in plan.items:
+        if item.action != "skip-unavailable" or item.reason != LISTING_ERROR_REASON:
+            continue
+        error_class = item.entry.get("error_class")
+        message = str(item.entry.get("error") or f"listagem de {item.url}")
+        found.append(
+            (
+                item.id or item.dataset,
+                f"{error_class}: {message}" if error_class else message,
+            )
+        )
+    return found
 
 
 def default_client() -> HttpClient:
@@ -2021,6 +2052,9 @@ class FetcherApp:
         """
         console = get_console()
         actual_output = output
+        # Falhas de descoberta que o ``check`` gravou no plano (itens
+        # ``skip-unavailable``/``listing-error``): entram nos erros do sync.
+        listing_errors: list[tuple[str, str]] = []
 
         if from_plan is not None:
             try:
@@ -2046,6 +2080,7 @@ class FetcherApp:
                 for item in plan.items
                 if item.action == "download"
             ]
+            listing_errors = plan_listing_errors(plan)
             console.print(
                 f"[dim]Plano {from_plan}: {len(entries)} entrada(s) "
                 f"com ação 'download' de {len(plan.items)} verificada(s).[/dim]"
@@ -2083,7 +2118,14 @@ class FetcherApp:
             console.print(table)
             console.print(f"\n[bold]{len(entries)}[/bold] arquivo(s) listado(s).")
             recorder.succeeded = 0
-            recorder.errors = []
+            recorder.errors = list(listing_errors)
+            if listing_errors:
+                console.print(
+                    f"[red]{len(listing_errors)} falha(s) de descoberta no plano:[/red]"
+                )
+                for eid, emsg in listing_errors:
+                    console.print(f"  {eid}: {escape(emsg)}")
+                raise typer.Exit(1)
             return
 
         if force:
@@ -2094,6 +2136,9 @@ class FetcherApp:
             downloaded, total, errors = self.download_datasets(
                 entries, actual_output, workers=workers
             )
+        if listing_errors:
+            total += len(listing_errors)
+            errors = [*errors, *listing_errors]
         recorder.total, recorder.succeeded, recorder.errors = total, downloaded, errors
 
         console.print(

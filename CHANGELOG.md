@@ -7,6 +7,10 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+### Corrigido
+
+- **`sync --from-plan` conta a falha de descoberta do plano.** Os itens `skip-unavailable` com motivo `listing-error` (o que o `check` grava quando uma parte do catálogo não pôde ser listada) eram ignorados e o `sync` saía 0 sem os arquivos que faltavam. Agora cada um é um erro do `sync` (`errors` do `--summary-json`, com o `id` do item e `<error_class>: <error>` da entrada, ou a URL se não houver texto): sai 3 se algo baixou e 1 se nada baixou; com `--dry-run`, sai 1. Novos `LISTING_ERROR_REASON` e `plan_listing_errors(plan)` em `quantilica.cli.sdk`. O README documenta o contrato (seção para autores de fetcher). Quem tem `sync` próprio e já conta esses itens (`datasus`) não é afetado.
+
 ## [0.30.0] - 2026-11-28
 
 ### Adicionado

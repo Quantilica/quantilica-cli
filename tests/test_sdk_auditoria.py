@@ -846,3 +846,233 @@ def test_backfill_mantem_falha_de_unidade_que_ainda_esta_na_lista(
     assert again.exit_code == 1  # ainda está na lista e continua falhando
     cp = tmp_path / ".backfill" / "backfill.json"
     assert "bad" in json.loads(cp.read_text(encoding="utf-8"))["failed"]
+
+
+# ---------------------------------------------------------------
+# 6. falha de descoberta registrada no plano (listing-error)
+# ---------------------------------------------------------------
+
+
+def _plan_with_listing_error(tmp_path: Path, **extra_entry: Any) -> Path:
+    entry = sample_list_datasets("exp")[0]
+    plan = tmp_path / "plan.json"
+    plan.write_text(
+        json.dumps(
+            {
+                "fetcher": "x",
+                "output_dir": "",
+                "generated_at": "",
+                "items": [
+                    {
+                        "dataset": "exp",
+                        "id": "exp-monthly",
+                        "entry": entry,
+                        "action": "download",
+                        "reason": "not-present",
+                    },
+                    {
+                        "dataset": "imp",
+                        "id": "listing-error:imp:pacote-x",
+                        "url": "",
+                        "entry": {
+                            "id": "listing-error:imp:pacote-x",
+                            "error": "HTTP 503 do CKAN",
+                            "error_class": "RuntimeError",
+                            **extra_entry,
+                        },
+                        "action": "skip-unavailable",
+                        "reason": "listing-error",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return plan
+
+
+def test_from_plan_conta_listing_error_como_erro_e_sai_3(tmp_path: Path) -> None:
+    app = make_app()
+    _counting(app, [])
+    plan = _plan_with_listing_error(tmp_path)
+    out = tmp_path / "resumo.json"
+    result = runner.invoke(
+        _grouped(app.app),
+        [
+            "fd",
+            "sync",
+            "--from-plan",
+            str(plan),
+            "-o",
+            str(tmp_path),
+            "--summary-json",
+            str(out),
+        ],
+    )
+    assert result.exit_code == EXIT_SYNC_PARTIAL, result.output
+    resumo = _load(out)
+    assert resumo["exit_code"] == EXIT_SYNC_PARTIAL
+    assert resumo["errors"] == [
+        {
+            "id": "listing-error:imp:pacote-x",
+            "message": "RuntimeError: HTTP 503 do CKAN",
+        }
+    ]
+    assert resumo["failed"] == 1
+    assert resumo["total"] == resumo["succeeded"] + 1
+
+
+def test_from_plan_so_com_listing_error_sai_1(tmp_path: Path) -> None:
+    app = make_app()
+    _counting(app, [])
+    plan = _plan_with_listing_error(tmp_path)
+    data = _load(plan)
+    data["items"] = data["items"][1:]  # nada a baixar além da falha
+    plan.write_text(json.dumps(data), encoding="utf-8")
+    out = tmp_path / "resumo.json"
+    result = runner.invoke(
+        _grouped(app.app),
+        [
+            "fd",
+            "sync",
+            "--from-plan",
+            str(plan),
+            "-o",
+            str(tmp_path),
+            "--summary-json",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 1, result.output
+    assert [e["id"] for e in _load(out)["errors"]] == ["listing-error:imp:pacote-x"]
+
+
+def test_listing_error_sem_texto_cita_a_url(tmp_path: Path) -> None:
+    from quantilica.cli.sdk import CheckPlan, plan_listing_errors
+
+    plan = CheckPlan.from_dict(
+        {
+            "fetcher": "x",
+            "output_dir": "",
+            "generated_at": "",
+            "items": [
+                {
+                    "dataset": "imp",
+                    "id": "imp-1",
+                    "url": "https://x/dir",
+                    "entry": {},
+                    "action": "skip-unavailable",
+                    "reason": "listing-error",
+                },
+                {  # outro motivo de indisponibilidade: não é erro
+                    "dataset": "imp",
+                    "id": "imp-2",
+                    "url": "https://x/y",
+                    "entry": {"error": "x"},
+                    "action": "skip-unavailable",
+                    "reason": "remote-404",
+                },
+            ],
+        }
+    )
+    assert plan_listing_errors(plan) == [("imp-1", "listagem de https://x/dir")]
+
+
+def test_skip_unavailable_de_outro_motivo_nao_e_erro(tmp_path: Path) -> None:
+    app = make_app()
+    _counting(app, [])
+    plan = _plan_with_listing_error(tmp_path)
+    data = _load(plan)
+    data["items"][1]["reason"] = "remote-404"
+    plan.write_text(json.dumps(data), encoding="utf-8")
+    result = runner.invoke(
+        _grouped(app.app), ["fd", "sync", "--from-plan", str(plan), "-o", str(tmp_path)]
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_from_plan_dry_run_com_listing_error_sai_1(tmp_path: Path) -> None:
+    app = make_app()
+    _counting(app, [])
+    plan = _plan_with_listing_error(tmp_path)
+    result = runner.invoke(
+        _grouped(app.app),
+        ["fd", "sync", "--from-plan", str(plan), "--dry-run", "-o", str(tmp_path)],
+    )
+    assert result.exit_code == 1
+    assert "falha(s) de descoberta" in " ".join(result.output.split())
+
+
+def test_check_devolve_o_listing_error_do_fetcher_e_sai_0(tmp_path: Path) -> None:
+    """Contrato: o ``check`` grava o item e sai 0; o ``sync --from-plan`` o conta."""
+    from quantilica.cli.sdk import CheckPlanItem
+
+    def listing(group: str) -> list[dict]:
+        found = sample_list_datasets(group)
+        if group == "imp":
+            found.append(
+                {
+                    "id": "listing-error:imp:pacote-x",
+                    "group": "imp",
+                    "url": "",
+                    "type": "listing-error",
+                    "error": "HTTP 503 do CKAN",
+                    "error_class": "RuntimeError",
+                }
+            )
+        return found
+
+    app = make_app(list_datasets=listing)
+
+    def check_entry(entry: dict, output_dir: Path) -> CheckPlanItem:
+        if entry.get("type") == "listing-error":
+            return CheckPlanItem(
+                dataset=entry["group"],
+                id=entry["id"],
+                url=entry["url"],
+                partition=None,
+                local_path="",
+                remote_etag=None,
+                remote_last_modified=None,
+                remote_size=None,
+                local_exists=False,
+                action="skip-unavailable",
+                reason="listing-error",
+                entry=dict(entry),
+            )
+        return CheckPlanItem(
+            dataset=entry["group"],
+            id=entry["id"],
+            url=entry["url"],
+            partition=None,
+            local_path=str(output_dir / entry["id"]),
+            remote_etag=None,
+            remote_last_modified=None,
+            remote_size=None,
+            local_exists=False,
+            action="download",
+            reason="not-present",
+            entry=dict(entry),
+        )
+
+    app.check_entry = check_entry  # type: ignore[method-assign]
+    _counting(app, [])
+    plan = tmp_path / "plan.json"
+    checked = runner.invoke(app.app, ["check", "-o", str(tmp_path), "--out", str(plan)])
+    assert checked.exit_code == 0, checked.output
+    out = tmp_path / "resumo.json"
+    result = runner.invoke(
+        _grouped(app.app),
+        [
+            "fd",
+            "sync",
+            "--from-plan",
+            str(plan),
+            "-o",
+            str(tmp_path),
+            "--summary-json",
+            str(out),
+        ],
+    )
+    assert result.exit_code == EXIT_SYNC_PARTIAL, result.output
+    assert [e["id"] for e in _load(out)["errors"]] == ["listing-error:imp:pacote-x"]

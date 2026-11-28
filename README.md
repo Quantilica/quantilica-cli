@@ -88,6 +88,18 @@ O `sync` (e o `check`) do `FetcherApp` não aceita em silêncio um catálogo que
   `skipped_items` do resumo e log em INFO) e o código de saída não muda; o `check` a devolve
   como `skip-unavailable` com motivo `pending-publication`. Sem a marca, 404 segue sendo erro do
   arquivo, e qualquer outro erro (403, 5xx, rede) também, com ou sem a marca.
+- **Falha de descoberta no `check`.** Quando o fetcher não consegue listar uma parte do
+  catálogo (um pacote que não responde, um diretório recusado), o `check` não deve abortar
+  nem esconder a falha: o plugin devolve, no lugar das entradas que faltaram, uma entrada
+  sentinela e o `check_entry` dela devolve um `CheckPlanItem` com `action="skip-unavailable"`
+  e `reason="listing-error"` (`LISTING_ERROR_REASON`), com a causa em `entry["error"]` e,
+  se houver, a classe em `entry["error_class"]`. O `check` grava o plano dos demais itens e
+  sai 0. O `sync --from-plan` conta cada um desses itens como erro (`id` do item, mensagem
+  `<error_class>: <error>`; `errors` do `--summary-json`) e sai 3 se algo baixou ou 1 se
+  nada baixou; o `--dry-run` do plano com a falha sai 1. O reclassificador do plano mantém
+  o item e o motivo. Um `sync` próprio que já lê esses itens (como o do `datasus`) não passa
+  pelo `sync` do host e não conta duas vezes. Sem plano (`sync` direto), a falha de
+  descoberta é do plugin: ele soma o erro ao resultado do próprio `download_datasets`.
 - **`pipeline`** chama o `sync` que o `typer` resolve pelo nome (o último registrado), só com os
   argumentos que ele declara: `groups` (ou o único argumento variádico do `sync`), `-o/--output`,
   `--dry-run`, `--workers`, `--verbose` e `--summary-json`. Um `sync` próprio que não aceita
