@@ -17,12 +17,14 @@ import re
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Annotated, Any, cast
+from urllib.parse import urlsplit
 
+import httpx2
 import typer
 from quantilica.core.exceptions import FetchError
 from quantilica.core.ftp import FtpClient
@@ -512,6 +514,63 @@ def default_client() -> HttpClient:
     )
 
 
+def _connect_failure(exc: BaseException | None) -> BaseException | None:
+    """Achar, na cadeia da exceção, a falha de CONEXÃO (não de resposta).
+
+    O cliente do core esgota as tentativas e levanta ``RetryError`` com a
+    última falha em ``__cause__``; por isso a cadeia é percorrida. Só
+    ``ConnectTimeout`` e ``ConnectError`` contam: resposta lenta, status de erro
+    e conexão reiniciada provam que há alguém do outro lado.
+    """
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        if isinstance(exc, httpx2.ConnectTimeout | httpx2.ConnectError):
+            return exc
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
+class _ProbeHttpClient(HttpClient):
+    """``HttpClient`` do HEAD de frescor: lembra por que o HEAD falhou.
+
+    ``HttpFreshnessProbe`` e ``head_last_modified_date`` engolem a exceção; o
+    ``FetcherApp`` precisa saber se foi falta de conexão (para falhar rápido) e
+    se o HEAD falhou de qualquer jeito (para não repeti-lo).
+    """
+
+    head_failed: bool = False
+    connect_failure: BaseException | None = None
+
+    def _remember(self, exc: Exception) -> None:
+        self.head_failed = True
+        if self.connect_failure is None and _connect_failure(exc) is not None:
+            self.connect_failure = exc
+
+    def head_or_get(self, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return super().head_or_get(*args, **kwargs)
+        except Exception as exc:
+            self._remember(exc)
+            raise
+
+
+def _env_number(name: str, cast_to: Callable[[str], Any]) -> Any:
+    """Valor numérico de uma variável de ambiente, ou ``None`` se ausente/inválido."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return cast_to(raw)
+    except ValueError:
+        return None
+
+
+def _host_key(url: str) -> str:
+    parts = urlsplit(url)
+    return f"{(parts.hostname or '').lower()}:{parts.port or ''}"
+
+
 _aviso_core_antigo = False
 _aviso_core_lock = threading.Lock()
 
@@ -624,6 +683,36 @@ class FetcherApp:
             no ``--summary-json``); os grupos declarados aqui ficam fora das
             duas regras. Só declare o que é vazio de verdade por desenho: um
             grupo que esvazia porque a fonte mudou precisa continuar falhando.
+        probe_timeout: Teto, em segundos, do timeout de cada requisição do
+            HEAD de frescor do host (o do ``check`` e o do ``sync``). ``None``
+            (padrão) mantém o do cliente.
+        probe_attempts: Teto de tentativas do HEAD de frescor. ``None`` mantém
+            as do cliente.
+        probe_retry_delay: Teto, em segundos, da espera-base entre tentativas do
+            HEAD de frescor. ``None`` mantém a do cliente.
+        probe_fail_fast_on_connect: Se ``True``, um HEAD que não consegue
+            CONECTAR (``ConnectTimeout``/``ConnectError`` depois de esgotadas as
+            tentativas) significa fonte fora do ar: no ``sync`` o arquivo falha
+            na hora (``fonte inacessível``), sem tentar o download; no
+            ``check`` o item sai ``download`` com motivo
+            ``metadata-unavailable: fonte inacessível (...)``, e o
+            ``sync --from-plan`` seguinte o acusa como erro. Durante uma
+            mesma execução (``sync`` ou ``check``), o host que falhou em
+            conectar é lembrado: as demais entradas dele falham na hora, sem
+            gastar o orçamento outra vez. Falha de HEAD que não é de conexão
+            (status de erro, resposta lenta, servidor sem HEAD) continua sem
+            impedir o download.
+
+    Orçamento do HEAD de frescor: os quatro parâmetros ``probe_*`` valem para
+    todo HEAD de frescor do host, e só para ele (o download mantém o orçamento
+    do cliente). Os três primeiros são tetos: vale o menor entre o parâmetro, o
+    do cliente e o da variável de ambiente correspondente
+    (``QUANTILICA_HTTP_TIMEOUT``, ``QUANTILICA_HTTP_ATTEMPTS``,
+    ``QUANTILICA_HTTP_RETRY_DELAY``), quando definida. Sem nenhum ``probe_*``,
+    o HEAD usa o cliente do app como sempre usou. Com uma fonte fora do ar, o
+    ``check`` leva, no pior caso, ``probe_attempts`` x ``probe_timeout``
+    por host (o resto das entradas do host falha na hora com
+    ``probe_fail_fast_on_connect``), e não mais 5 x 180 s por URL.
 
     Contrato de entrada do catálogo (cada ``dict`` devolvido por
     ``list_datasets``), além de ``url``/``id``/``group``:
@@ -659,7 +748,17 @@ class FetcherApp:
         info: FetcherInfo | None = None,
         build_default_commands: bool = True,
         expected_empty_groups: Iterable[str] = (),
+        probe_timeout: float | None = None,
+        probe_attempts: int | None = None,
+        probe_retry_delay: float | None = None,
+        probe_fail_fast_on_connect: bool = False,
     ):
+        if probe_timeout is not None and probe_timeout <= 0:
+            raise ValueError("probe_timeout deve ser positivo")
+        if probe_attempts is not None and probe_attempts < 1:
+            raise ValueError("probe_attempts deve ser pelo menos 1")
+        if probe_retry_delay is not None and probe_retry_delay < 0:
+            raise ValueError("probe_retry_delay não pode ser negativo")
         self.name = name
         self.help = help
         self.groups = groups_dict
@@ -676,6 +775,13 @@ class FetcherApp:
         self.info: FetcherInfo = info or derive_fetcher_info(name)
 
         self.expected_empty_groups: frozenset[str] = frozenset(expected_empty_groups)
+        self.probe_timeout = probe_timeout
+        self.probe_attempts = probe_attempts
+        self.probe_retry_delay = probe_retry_delay
+        self.probe_fail_fast_on_connect = probe_fail_fast_on_connect
+        # Hosts que não conectaram na execução em curso (``probe_fail_fast_on_connect``).
+        self._hosts_sem_conexao: dict[str, str] = {}
+        self._hosts_sem_conexao_lock = threading.Lock()
         self.all_group_keys = list(self.groups.keys())
         self.all_keys = self.all_group_keys + list(self.aliases.keys())
         self.resolve_groups = make_resolve_groups(groups_dict, aliases_dict)
@@ -1301,24 +1407,161 @@ class FetcherApp:
                 f"({total} unidades)."
             )
 
+    def _probe_declared(self) -> bool:
+        """Se o app declarou algum orçamento (``probe_*``) para o HEAD de frescor."""
+        return (
+            self.probe_timeout is not None
+            or self.probe_attempts is not None
+            or self.probe_retry_delay is not None
+            or self.probe_fail_fast_on_connect
+        )
+
+    def _probe_client(self) -> _ProbeHttpClient | None:
+        """Cliente do HEAD de frescor com o orçamento ``probe_*``, ou ``None``.
+
+        ``None`` (sem ``probe_*`` declarado, ou cliente que não é HTTP) significa
+        "use ``self.client``", como sempre. O cliente devolvido ainda não foi
+        aberto: o ``HttpClient`` do core monta o httpx no ``__enter__`` com o
+        timeout que o objeto tem NAQUELE momento, então o orçamento é definido
+        aqui, antes do ``with``. É um objeto novo a cada chamada (não mexe no
+        cliente do app, que as threads de um ``sync`` ou ``check`` compartilham).
+        """
+        base = self.client
+        if not self._probe_declared() or not isinstance(base, HttpClient):
+            return None
+
+        def capped(current: Any, cap: Any, env: Any) -> Any:
+            # Teto: vale o menor entre o cliente, o parâmetro e o ambiente
+            # (o ambiente só entra quando o parâmetro correspondente existe).
+            if cap is None:
+                return current
+            values = [v for v in (current, cap, env) if v is not None]
+            return min(values)
+
+        client = _ProbeHttpClient(
+            timeout=capped(
+                base.timeout,
+                self.probe_timeout,
+                _env_number("QUANTILICA_HTTP_TIMEOUT", float),
+            ),
+            headers=dict(base.headers),
+            follow_redirects=base.follow_redirects,
+            attempts=capped(
+                base.attempts,
+                self.probe_attempts,
+                _env_number("QUANTILICA_HTTP_ATTEMPTS", int),
+            ),
+            retry_base_delay=capped(
+                base.retry_base_delay,
+                self.probe_retry_delay,
+                _env_number("QUANTILICA_HTTP_RETRY_DELAY", float),
+            ),
+            verify=base.verify,
+            transport=base.transport,
+            limits=base.limits,
+            emulate_browser=True,
+        )
+        if base.host_policies:
+            share = getattr(client, "share_host_state", None)
+            if share is not None:
+                share(base)
+            else:  # quantilica-core anterior à política compartilhada
+                _warn_core_sem_estado_compartilhado()
+        return client
+
+    @contextlib.contextmanager
+    def _probe_scope(self) -> Iterator[Any]:
+        """Cliente aberto para um HEAD de frescor (o do app, se não há ``probe_*``)."""
+        probe = self._probe_client()
+        if probe is None:
+            yield self.client
+            return
+        with probe as client:
+            yield client
+
+    def _reset_hosts_sem_conexao(self) -> None:
+        with self._hosts_sem_conexao_lock:
+            self._hosts_sem_conexao.clear()
+
+    def _guard_host_sem_conexao(self, url: str) -> None:
+        """Falha na hora se o host já não conectou nesta execução.
+
+        Só age com ``probe_fail_fast_on_connect``.
+
+        Raises:
+            FetchError: Se uma entrada anterior desta execução não conectou ao
+                host de ``url``.
+        """
+        if not self.probe_fail_fast_on_connect:
+            return
+        with self._hosts_sem_conexao_lock:
+            cause = self._hosts_sem_conexao.get(_host_key(url))
+        if cause is not None:
+            raise FetchError(
+                f"fonte inacessível (sem conexão com o host nesta execução): "
+                f"{url}: {cause}"
+            )
+
+    def _sem_conexao(self, url: str, client: Any, failure: BaseException) -> FetchError:
+        """Registra o host como fora do ar e monta o erro de ``fonte inacessível``."""
+        cause = _connect_failure(failure) or failure
+        with self._hosts_sem_conexao_lock:
+            self._hosts_sem_conexao.setdefault(_host_key(url), repr(cause))
+        attempts = getattr(client, "attempts", "?")
+        timeout = getattr(client, "timeout", None)
+        budget = f"{timeout:.0f} s" if isinstance(timeout, int | float) else "?"
+        return FetchError(
+            f"fonte inacessível (sem conexão em {attempts} tentativa(s) de "
+            f"{budget}): {url}: {cause!r}"
+        )
+
     def _safe_head_date(self, url: str) -> dt.date | None:
-        with contextlib.suppress(Exception):
-            if hasattr(self, "freshness_policy") and self.freshness_policy:
-                from quantilica.core.sync import FreshnessPolicy, HttpFreshnessProbe
+        """Data do ``Last-Modified`` por HEAD, ou ``None`` se indisponível.
+
+        Usa o orçamento ``probe_*`` do app, se declarado. Falha de HEAD não
+        impede o download (devolve ``None``), exceto, com
+        ``probe_fail_fast_on_connect``, a falta de CONEXÃO.
+
+        Raises:
+            FetchError: Só com ``probe_fail_fast_on_connect``, se a conexão com
+                a fonte não se estabelece.
+        """
+        policy = None
+        if getattr(self, "freshness_policy", None):
+            try:
+                from quantilica.core.sync import FreshnessPolicy
 
                 policy = FreshnessPolicy(self.freshness_policy)
-                if policy == FreshnessPolicy.REMOTE_ONLY:
-                    # O conteúdo é a única verdade (sha256); não sondar
-                    # com HEAD — o timestamp do nome virá dos metadados da
-                    # própria entrada, não de uma sondagem remota.
-                    return None
+            except Exception:  # noqa: BLE001 - política inválida: sem carimbo
+                return None
+            if policy == FreshnessPolicy.REMOTE_ONLY:
+                # O conteúdo é a única verdade (sha256); não sondar
+                # com HEAD — o timestamp do nome virá dos metadados da
+                # própria entrada, não de uma sondagem remota.
+                return None
+        self._guard_host_sem_conexao(url)
+        with self._probe_scope() as client:
+            last_modified = self._head_date_with(client, url, policy)
+            failure = getattr(client, "connect_failure", None)
+            if failure is not None and self.probe_fail_fast_on_connect:
+                raise self._sem_conexao(url, client, failure)
+        return last_modified
+
+    def _head_date_with(self, client: Any, url: str, policy: Any) -> dt.date | None:
+        with contextlib.suppress(Exception):
+            if policy is not None:
+                from quantilica.core.sync import HttpFreshnessProbe
+
                 # Só HTTP tem HEAD; com FtpClient o erro cai no suppress abaixo.
-                http_client = cast(HttpClient, self.client)
-                probe = HttpFreshnessProbe(http_client, policy=policy)
+                probe = HttpFreshnessProbe(cast(HttpClient, client), policy=policy)
                 stat = probe.probe(url)
                 if stat and stat.last_modified:
                     return stat.last_modified.date()
-            return cast(HttpClient, self.client).head_last_modified_date(url)
+                if getattr(client, "head_failed", False):
+                    # O HEAD falhou: o de ``head_last_modified_date`` é o mesmo
+                    # pedido e só repetiria a espera (o orçamento curto vale uma vez).
+                    return None
+            return cast(HttpClient, client).head_last_modified_date(url)
         return None
 
     def _download_file(
@@ -1516,6 +1759,7 @@ class FetcherApp:
         """
         console = get_console()
         total = len(entries)
+        self._reset_hosts_sem_conexao()
         overall = make_batch_progress(console)
         file_prog = make_download_progress(console)
         overall_task = overall.add_task("[cyan]Baixando...[/cyan]", total=total)
@@ -1645,29 +1889,39 @@ class FetcherApp:
         head = None
         head_error: Exception | None = None
         not_found = 0
-        for url in urls_to_try:
-            try:
-                candidate = cast(HttpClient, self.client).head(url)  # só HTTP
-            except HttpStatusError as exc:
-                head_error = exc
-                if exc.status_code == 404:
-                    not_found += 1
-                    continue
-                if exc.status_code in (403, 405):
-                    try:
-                        probed = self._range_probe(entry, output_dir, url, partition)
-                    except _ProbeNotFoundError:
-                        # HEAD recusado, mas o GET de probe prova que sumiu.
+        with self._probe_scope() as client:
+            for url in urls_to_try:
+                try:
+                    self._guard_host_sem_conexao(url)
+                    candidate = cast(HttpClient, client).head(url)  # só HTTP
+                except HttpStatusError as exc:
+                    head_error = exc
+                    if exc.status_code == 404:
                         not_found += 1
                         continue
-                    if probed is not None:
-                        return probed
+                    if exc.status_code in (403, 405):
+                        try:
+                            probed = self._range_probe(
+                                entry, output_dir, url, partition, client=client
+                            )
+                        except _ProbeNotFoundError:
+                            # HEAD recusado, mas o GET de probe prova que sumiu.
+                            not_found += 1
+                            continue
+                        if probed is not None:
+                            return probed
+                    break
+                except Exception as exc:  # noqa: BLE001 - metadata best effort
+                    head_error = exc
+                    if self.probe_fail_fast_on_connect:
+                        failure = _connect_failure(exc)
+                        if failure is not None and not isinstance(exc, FetchError):
+                            # Fonte fora do ar: o item segue como "download" (o
+                            # ``sync --from-plan`` o acusa), sem gastar mais nada.
+                            head_error = self._sem_conexao(url, client, exc)
+                    break
+                head = candidate
                 break
-            except Exception as exc:  # noqa: BLE001 - metadata best effort
-                head_error = exc
-                break
-            head = candidate
-            break
 
         if head is None:
             local = self.path_builder(output_dir, entry, None)
@@ -1763,6 +2017,7 @@ class FetcherApp:
         output_dir: Path,
         url: str,
         partition: str | None,
+        client: Any = None,
     ) -> CheckPlanItem | None:
         """Probe ``GET`` com ``Range: bytes=0-0`` quando o ``HEAD`` é recusado.
 
@@ -1776,7 +2031,9 @@ class FetcherApp:
         Raises:
             _ProbeNotFoundError: Se o GET de probe responder 404.
         """
-        maybe_stream = getattr(self.client, "stream", None)
+        maybe_stream = getattr(
+            client if client is not None else self.client, "stream", None
+        )
         if not callable(maybe_stream):
             return None
         stream: Callable[..., Any] = maybe_stream  # callable() narrows to object
@@ -1915,6 +2172,7 @@ class FetcherApp:
             A :class:`CheckPlan` with one verdict per entry.
         """
         results: list[CheckPlanItem | None] = [None] * len(entries)
+        self._reset_hosts_sem_conexao()
 
         def _worker(index: int, entry: dict[str, Any]) -> None:
             results[index] = self._check_entry_isolated(entry, output_dir)

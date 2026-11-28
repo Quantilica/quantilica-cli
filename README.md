@@ -100,6 +100,24 @@ O `sync` (e o `check`) do `FetcherApp` não aceita em silêncio um catálogo que
   o item e o motivo. Um `sync` próprio que já lê esses itens (como o do `datasus`) não passa
   pelo `sync` do host e não conta duas vezes. Sem plano (`sync` direto), a falha de
   descoberta é do plugin: ele soma o erro ao resultado do próprio `download_datasets`.
+- **Orçamento do HEAD de frescor.** Antes de cada arquivo, o `sync` faz um HEAD para carimbar o
+  nome com o `Last-Modified`, e o `check` faz o dele para decidir se há o que baixar; ambos usam o
+  orçamento do cliente do app (5 tentativas de até 180 s por padrão). Com a fonte fora do ar isso
+  são ~15 minutos por URL antes de qualquer erro (27 URLs no `check` levaram 82 minutos). O
+  construtor aceita um orçamento próprio e curto para esse HEAD (e só para ele: o download não
+  muda): `FetcherApp(..., probe_timeout=30.0, probe_attempts=2, probe_retry_delay=1.0,
+  probe_fail_fast_on_connect=True)`. Os três primeiros são tetos (vale o menor entre o parâmetro,
+  o do cliente e o da variável de ambiente `QUANTILICA_HTTP_TIMEOUT`, `QUANTILICA_HTTP_ATTEMPTS`
+  ou `QUANTILICA_HTTP_RETRY_DELAY`, se definida). Com `probe_fail_fast_on_connect=True`, um HEAD
+  que não consegue CONECTAR (`ConnectTimeout`/`ConnectError` depois das tentativas) quer dizer
+  fonte fora do ar: no `sync` o arquivo falha na hora, com `fonte inacessível (...)` em `errors`
+  do resumo e sem tentar o download; no `check` o item sai `download` com motivo
+  `metadata-unavailable: fonte inacessível (...)` (o plano continua completo e o
+  `sync --from-plan` seguinte acusa o erro, em vez de o `check` o esconder como `skip-unavailable`).
+  Dentro de uma mesma execução o host que não conectou é lembrado, e as demais entradas dele
+  falham sem gastar o orçamento outra vez. Falha de HEAD que não é de conexão (status de erro,
+  resposta lenta, servidor sem HEAD) continua sem impedir o download. Sem nenhum `probe_*`, nada
+  muda. Quem sobrescrevia `_safe_head_date` para isso pode apagar a sobrescrita.
 - **`pipeline`** chama o `sync` que o `typer` resolve pelo nome (o último registrado), só com os
   argumentos que ele declara: `groups` (ou o único argumento variádico do `sync`), `-o/--output`,
   `--dry-run`, `--workers`, `--verbose` e `--summary-json`. Um `sync` próprio que não aceita

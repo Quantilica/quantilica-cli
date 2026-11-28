@@ -7,6 +7,11 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+### Adicionado
+
+- **Orçamento do HEAD de frescor por fetcher.** `FetcherApp` aceita `probe_timeout`, `probe_attempts`, `probe_retry_delay` e `probe_fail_fast_on_connect` (todos opcionais; sem eles nada muda). Valem para todo HEAD de frescor do host, o do `sync` (`_safe_head_date`, via `download_entry`) e o do `check` (`check_entry`, inclusive o GET `Range` que substitui um HEAD recusado), e só para eles: o download mantém o orçamento do cliente. Os três primeiros são tetos, e um valor menor em `QUANTILICA_HTTP_TIMEOUT`, `QUANTILICA_HTTP_ATTEMPTS` ou `QUANTILICA_HTTP_RETRY_DELAY` prevalece. O orçamento é fixado antes de o cliente ser aberto (o `HttpClient` do core monta o httpx no `__enter__`), num cliente próprio do HEAD que não mexe no do app (compartilhado entre as threads).
+- **Falha rápida sem conexão.** Com `probe_fail_fast_on_connect=True`, o HEAD que não consegue conectar (`ConnectTimeout`/`ConnectError` na cadeia do erro de repetição do core) quer dizer fonte fora do ar. No `sync` o arquivo falha na hora com `fonte inacessível (...)` (em `errors` do `--summary-json`), sem tentar o download nem um segundo HEAD. No `check` o item sai `download` com motivo `metadata-unavailable: fonte inacessível (...)`, e não `skip-unavailable` (que significa "a fonte não tem o arquivo", não "não consegui perguntar"): o plano segue completo e o `sync --from-plan` seguinte acusa o erro. Na mesma execução o host que não conectou é lembrado e as demais entradas dele falham sem gastar o orçamento outra vez. Falhas do HEAD que não são de conexão continuam sem impedir o download. Com a fonte fora do ar, o `check` de 27 URLs que levava 82 minutos (5 tentativas de 180 s por URL) passa a gastar um orçamento só (por exemplo, 2 x 30 s) por thread na primeira rodada.
+
 ## [0.30.1] - 2026-11-28
 
 ### Corrigido
