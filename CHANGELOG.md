@@ -7,6 +7,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+## [0.30.0] - 2026-11-28
+
 ### Adicionado
 
 - **Catálogo vazio não é sucesso.** `sync` e `check` saem com 1 e dizem `catálogo vazio para <grupos>` quando `list_datasets` não devolve nenhuma entrada para os grupos pedidos (o motivo vai em `error` do `--summary-json`, que também ganha `empty_groups`). Grupo vazio isolado, com os outros cheios, vira aviso em WARNING e entra em `empty_groups`, sem mudar o código de saída. `sync --from-plan` com um plano sem nenhuma entrada verificada também sai com 1. Um grupo vazio por desenho se declara no construtor, `FetcherApp(..., expected_empty_groups=[...])` (fica fora do aviso e da regra; se todos os grupos pedidos estão declarados, o `sync` sai com 0).
