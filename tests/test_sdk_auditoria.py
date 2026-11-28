@@ -66,11 +66,66 @@ def test_sync_catalogo_vazio_sai_com_um_e_diz_os_grupos(tmp_path: Path) -> None:
     )
     assert result.exit_code == 1, result.output
     assert "catálogo vazio para exp, imp" in " ".join(result.output.split())
-    assert calls == []  # nada foi "baixado"
+    assert calls == [0]  # o download do plugin roda com a lista vazia
     data = _load(out)
     assert data["status"] == "failed" and data["exit_code"] == 1
     assert data["error"] == "catálogo vazio para exp, imp"
     assert data["empty_groups"] == ["exp", "imp"]
+
+
+def test_catalogo_vazio_nao_apaga_os_erros_do_download_do_plugin(
+    tmp_path: Path,
+) -> None:
+    """Plugin que soma causas próprias (ex.: falha de descoberta) aos erros."""
+    app = make_app(list_datasets=_only())
+
+    def download(entries, output_dir, workers=4):
+        return 0, 1, [("descoberta:exp", "listagem fora do ar")]
+
+    app.download_datasets = download  # type: ignore[method-assign]
+    out = tmp_path / "r.json"
+    result = runner.invoke(
+        _grouped(app.app),
+        ["fd", "sync", "-o", str(tmp_path / "raw"), "--summary-json", str(out)],
+    )
+    assert result.exit_code == 1, result.output
+    saida = " ".join(result.output.split())
+    assert "descoberta:exp: listagem fora do ar" in saida
+    assert "catálogo vazio para exp, imp" in saida
+    data = _load(out)
+    assert data["errors"] == [
+        {"id": "descoberta:exp", "message": "listagem fora do ar"}
+    ]
+    assert data["failed"] == 1 and data["total"] == 1
+    assert data["error"] == "catálogo vazio para exp, imp"
+    assert data["exit_code"] == 1
+
+
+def test_catalogo_vazio_no_dry_run_nao_chama_o_download(tmp_path: Path) -> None:
+    app = make_app(list_datasets=_only())
+    calls: list[int] = []
+    _counting(app, calls)
+    result = runner.invoke(
+        _grouped(app.app), ["fd", "sync", "--dry-run", "-o", str(tmp_path)]
+    )
+    assert result.exit_code == 1
+    assert calls == []
+
+
+def test_check_catalogo_vazio_deixa_o_plugin_abortar_com_a_causa_dele(
+    tmp_path: Path,
+) -> None:
+    app = make_app(list_datasets=_only())
+    visto: list[int] = []
+
+    def check_datasets(entries, output_dir, workers=4):
+        visto.append(len(entries))
+        raise typer.Exit(1)
+
+    app.check_datasets = check_datasets  # type: ignore[method-assign]
+    result = runner.invoke(app.app, ["check", "-o", str(tmp_path)])
+    assert result.exit_code == 1
+    assert visto == [0]
 
 
 def test_sync_catalogo_vazio_so_para_o_grupo_pedido(tmp_path: Path) -> None:
@@ -193,6 +248,43 @@ def test_from_plan_sem_nenhuma_entrada_verificada_falha(tmp_path: Path) -> None:
     )
     assert result.exit_code == 1
     assert "plano sem nenhuma entrada" in " ".join(result.output.split())
+
+
+def test_check_com_grupos_declarados_vazios_grava_no_plano_e_o_sync_aceita(
+    tmp_path: Path,
+) -> None:
+    app = make_app(list_datasets=_only(), expected_empty_groups=["exp", "imp"])
+    _counting(app, [])
+    plan = tmp_path / "plan.json"
+    checked = runner.invoke(app.app, ["check", "-o", str(tmp_path), "--out", str(plan)])
+    assert checked.exit_code == 0, checked.output
+    data = _load(plan)
+    assert data["items"] == [] and data["expected_empty"] is True
+    result = runner.invoke(
+        _grouped(app.app), ["fd", "sync", "--from-plan", str(plan), "-o", str(tmp_path)]
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_plano_vazio_sem_a_marca_continua_falhando_no_sync(tmp_path: Path) -> None:
+    """Plano que sobrevive a outro processo (chave preservada) ou não: sem marca, erro."""
+    app = make_app(list_datasets=_only(), expected_empty_groups=["exp", "imp"])
+    plan = tmp_path / "plan.json"
+    plan.write_text(
+        json.dumps({"fetcher": "x", "output_dir": "", "generated_at": "", "items": []}),
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        _grouped(app.app), ["fd", "sync", "--from-plan", str(plan), "-o", str(tmp_path)]
+    )
+    assert result.exit_code == 1
+
+
+def test_plano_com_entradas_nao_grava_expected_empty(tmp_path: Path) -> None:
+    app = make_app(client=_not_found_client())
+    plan = tmp_path / "plan.json"
+    runner.invoke(app.app, ["check", "-o", str(tmp_path), "--out", str(plan)])
+    assert "expected_empty" not in _load(plan)
 
 
 def test_from_plan_com_tudo_em_dia_continua_saindo_com_zero(tmp_path: Path) -> None:
@@ -347,6 +439,65 @@ def test_marca_perdoa_404_vindo_de_download_entry_proprio(tmp_path: Path) -> Non
         _grouped(app.app), ["fd", "sync", "-o", str(tmp_path / "raw")]
     )
     assert result.exit_code == 0, result.output
+
+
+def test_404_na_url_principal_e_5xx_na_alternativa_nao_e_perdoado(
+    tmp_path: Path,
+) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        url = str(request.url)
+        if "imp-novo" in url and "alternativa" not in url:
+            return httpx2.Response(404)
+        if "alternativa" in url:
+            return httpx2.Response(503)
+        if request.method == "HEAD":
+            return httpx2.Response(200, headers={"Content-Length": "4"})
+        return httpx2.Response(200, content=b"data")
+
+    def listing(group: str) -> list[dict]:
+        entries = sample_list_datasets(group)
+        if group == "imp":
+            entries[0].update(
+                id="imp-novo",
+                url="https://example.test/imp-novo.csv",
+                fallback_urls=["https://example.test/alternativa/imp-novo.csv"],
+                pending_publication=True,
+            )
+        return entries
+
+    app = make_app(
+        list_datasets=listing,
+        client=HttpClient(attempts=1, transport=httpx2.MockTransport(handler)),
+    )
+    out = tmp_path / "r.json"
+    result = runner.invoke(
+        _grouped(app.app),
+        ["fd", "sync", "-o", str(tmp_path / "raw"), "--summary-json", str(out)],
+    )
+    assert result.exit_code == EXIT_SYNC_PARTIAL, result.output
+    data = _load(out)
+    assert [e["id"] for e in data["errors"]] == ["imp-novo"]
+    assert data["skipped_items"] == []
+
+
+def test_erro_levantado_durante_o_tratamento_de_um_404_nao_e_um_404() -> None:
+    from quantilica.cli.sdk import _is_not_found
+
+    try:
+        try:
+            raise HttpStatusError("https://example.test/x", 404)
+        except HttpStatusError:
+            raise TimeoutError("tempo esgotado") from None  # sem __cause__
+    except TimeoutError as exc:
+        assert exc.__context__ is not None
+        assert _is_not_found(exc) is False
+    try:
+        try:
+            raise HttpStatusError("https://example.test/x", 404)
+        except HttpStatusError as inner:
+            raise RuntimeError("embrulho") from inner
+    except RuntimeError as exc:
+        assert _is_not_found(exc) is True
 
 
 def test_check_devolve_pending_publication_para_entrada_marcada(

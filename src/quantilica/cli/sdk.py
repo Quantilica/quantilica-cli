@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
+import dataclasses
 import datetime as dt
 import email.utils
 import inspect
@@ -240,13 +241,18 @@ def _is_pending_publication(entry: Mapping[str, Any]) -> bool:
 
 
 def _is_not_found(exc: BaseException | None) -> bool:
-    """``True`` se ``exc`` (ou algo da sua cadeia) é um ``HttpStatusError`` 404."""
+    """``True`` se ``exc`` é um ``HttpStatusError`` 404 (ou foi causado por um).
+
+    Segue só ``__cause__`` (``raise X from 404``), nunca ``__context__``: uma
+    falha (tempo esgotado, 5xx) levantada enquanto um 404 era tratado não é um
+    404 e não pode ser perdoada.
+    """
     seen: set[int] = set()
     while exc is not None and id(exc) not in seen:
         seen.add(id(exc))
         if isinstance(exc, HttpStatusError) and exc.status_code == 404:
             return True
-        exc = exc.__cause__ or exc.__context__
+        exc = exc.__cause__
     return False
 
 
@@ -299,12 +305,16 @@ class CheckPlan:
         output_dir: Output directory the plan was computed against.
         generated_at: ISO-8601 UTC timestamp of plan generation.
         items: Per-entry verdicts.
+        expected_empty: ``True`` quando o catálogo veio vazio e todos os grupos
+            pedidos estão em ``expected_empty_groups`` do plugin (vazio por
+            desenho): o ``sync --from-plan`` aceita esse plano sem itens.
     """
 
     fetcher: str
     output_dir: str
     generated_at: str
     items: list[CheckPlanItem] = field(default_factory=list)
+    expected_empty: bool = False
 
     def render_table(self, console: Console | None = None) -> None:
         """Render the plan as a Rich table with a summary footer."""
@@ -330,10 +340,12 @@ class CheckPlan:
 
     def to_dict(self) -> dict[str, Any]:
         """Return the JSON-serializable representation of the plan."""
+        extra: dict[str, Any] = {"expected_empty": True} if self.expected_empty else {}
         return {
             "fetcher": self.fetcher,
             "output_dir": self.output_dir,
             "generated_at": self.generated_at,
+            **extra,
             "items": [
                 {
                     "dataset": it.dataset,
@@ -411,6 +423,7 @@ class CheckPlan:
             output_dir=str(data.get("output_dir", "")),
             generated_at=str(data.get("generated_at", "")),
             items=items,
+            expected_empty=bool(data.get("expected_empty", False)),
         )
 
     @classmethod
@@ -1916,14 +1929,15 @@ class FetcherApp:
         entries: list[dict[str, Any]],
         empty: list[str],
         *,
-        console: Console,
         recorder: SummaryRecorder | None = None,
-    ) -> None:
+    ) -> str | None:
         """Catálogo vazio não é sucesso (``sync`` e ``check``).
 
-        * Nenhuma entrada em nenhum grupo pedido: erro, saída 1, "catálogo
-          vazio para <grupos>" (e ``error`` no ``--summary-json``). Exceção: todos
-          os grupos pedidos estão em ``expected_empty_groups``.
+        * Nenhuma entrada em nenhum grupo pedido: devolve a mensagem de erro
+          ``catálogo vazio para <grupos>``; quem chama a imprime e sai com 1
+          (depois de dar ao plugin a chance de somar as causas dele, no
+          ``sync``). Exceção: todos os grupos pedidos estão em
+          ``expected_empty_groups`` (devolve ``None``).
         * Algum grupo vazio com os outros cheios: aviso em WARNING e
           ``empty_groups`` no resumo; não muda o código de saída. Os grupos de
           ``expected_empty_groups`` não entram.
@@ -1936,16 +1950,15 @@ class FetcherApp:
                     "[catálogo] sem entradas em %s (vazio por desenho)",
                     ", ".join(target_groups),
                 )
-                return
+                return None
             culprits = unexpected or target_groups
             label = ", ".join(culprits) if culprits else "(nenhum grupo)"
             message = f"catálogo vazio para {label}"
-            console.print(f"[red]Erro:[/red] {escape(message)}")
             logger.error("[catálogo] %s", message)
             if recorder is not None:
                 recorder.error = message
                 recorder.empty_groups = list(unexpected)
-            raise typer.Exit(1)
+            return message
         if unexpected:
             logger.warning(
                 "[catálogo] grupo(s) sem entradas: %s (os demais têm entradas)",
@@ -1953,6 +1966,42 @@ class FetcherApp:
             )
             if recorder is not None:
                 recorder.empty_groups = list(unexpected)
+        return None
+
+    def _fail_empty_catalog(
+        self,
+        message: str,
+        recorder: SummaryRecorder,
+        *,
+        output: Path,
+        dry_run: bool,
+        workers: int,
+        force: bool,
+    ) -> None:
+        """Termina o ``sync`` de catálogo vazio com saída 1, sem apagar causas.
+
+        Um plugin que sobrescreve ``download_datasets`` pode acrescentar aos
+        erros as causas que só ele conhece (ex.: falha de descoberta de um
+        grupo). Por isso o ``download_datasets`` roda com a lista vazia (fora do
+        ``--dry-run``), os erros dele vão para o resumo e para a tela, e a
+        mensagem de catálogo vazio entra junto, em ``error``.
+        """
+        console = get_console()
+        recorder.error = message
+        errors: list[tuple[str, str]] = []
+        if not dry_run:
+            kwargs: dict[str, Any] = {"workers": workers}
+            if force:
+                kwargs["force"] = True
+            downloaded, total, errors = self.download_datasets([], output, **kwargs)
+            recorder.total, recorder.succeeded = total, downloaded
+            recorder.errors = errors
+        console.print(f"[red]Erro:[/red] {escape(message)}")
+        if errors:
+            console.print(f"[red]{len(errors)} erro(s):[/red]")
+            for eid, emsg in errors:
+                console.print(f"  {eid}: {emsg}")
+        raise typer.Exit(1)
 
     def _run_sync(
         self,
@@ -1980,7 +2029,12 @@ class FetcherApp:
                 console.print(f"[red]Plano inválido: {exc}[/red]")
                 recorder.error = f"Plano inválido: {exc}"
                 raise typer.Exit(1) from None
-            if not plan.items:
+            if not plan.items and plan.expected_empty:
+                console.print(
+                    f"[dim]Plano {from_plan}: catálogo vazio por desenho "
+                    "(grupos em expected_empty_groups); nada a baixar.[/dim]"
+                )
+            elif not plan.items:
                 # Um plano sem nenhuma entrada verificada só sai de um catálogo
                 # vazio: não é "nada a baixar".
                 message = f"plano sem nenhuma entrada verificada: {from_plan}"
@@ -2006,9 +2060,18 @@ class FetcherApp:
                 raise typer.Exit(1) from None
 
             entries, empty = self._list_catalog(target_groups)
-            self._guard_catalog(
-                target_groups, entries, empty, console=console, recorder=recorder
+            empty_message = self._guard_catalog(
+                target_groups, entries, empty, recorder=recorder
             )
+            if empty_message is not None:
+                self._fail_empty_catalog(
+                    empty_message,
+                    recorder,
+                    output=actual_output,
+                    dry_run=dry_run,
+                    workers=workers,
+                    force=force,
+                )
 
         recorder.total = len(entries)
 
@@ -2291,8 +2354,15 @@ class FetcherApp:
                 raise typer.Exit(1) from None
 
             entries, empty = self._list_catalog(target_groups)
-            self._guard_catalog(target_groups, entries, empty, console=console)
+            empty_message = self._guard_catalog(target_groups, entries, empty)
+            # O plugin pode abortar o check por conta própria (ex.: falha de
+            # descoberta): ele roda antes da mensagem de catálogo vazio.
             plan = self.check_datasets(entries, actual_output, workers=workers)
+            if empty_message is not None:
+                console.print(f"[red]Erro:[/red] {escape(empty_message)}")
+                raise typer.Exit(1)
+            if not entries:
+                plan = dataclasses.replace(plan, expected_empty=True)
 
             if out is not None:
                 tmp = out.with_name(f".{out.name}.{os.getpid()}.tmp")

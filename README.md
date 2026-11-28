@@ -80,7 +80,7 @@ O `sync` (e o `check`) do `FetcherApp` não aceita em silêncio um catálogo que
   WARNING e o campo `empty_groups` do resumo. Um grupo que é vazio **por desenho** (por exemplo,
   um grupo só de catálogo, sem arquivo para baixar) se declara no construtor:
   `FetcherApp(..., expected_empty_groups=["ouvidoria"])`; esses grupos ficam fora do aviso e da
-  regra. Não declare um grupo que esvazia por falha da fonte: ele precisa continuar falhando.
+  regra (o `check` grava `expected_empty` no plano para o `sync --from-plan` aceitá-lo vazio). Não declare um grupo que esvazia por falha da fonte: ele precisa continuar falhando. Com catálogo vazio o `download_datasets` do plugin ainda roda, com a lista vazia, para que os erros dele (falha de descoberta, por exemplo) cheguem ao resumo junto com a mensagem.
 - **Entrada ainda não publicada.** Um catálogo que gera a entrada do período corrente antes de
   a fonte publicá-lo (virada de ano ou de mês) marca a entrada com
   `entry["pending_publication"] = True`. Um 404 nessa entrada (em todas as URLs dela) não é erro:
