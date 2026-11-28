@@ -57,6 +57,7 @@ def test_pipeline_parcial_converte_e_devolve_codigo_parcial(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = make_app()
+    (tmp_path / "raw").mkdir()
     monkeypatch.setattr(app, "download_datasets", _fake(1, 2, [("exp", "boom")]))
     converted: list[Path] = []
 
@@ -137,6 +138,7 @@ def test_pipeline_workers_vem_da_variavel_de_ambiente(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = make_app()
+    (tmp_path / "r").mkdir()
     seen = _spy_workers(app)
 
     @app.command_pipeline

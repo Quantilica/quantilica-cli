@@ -41,6 +41,18 @@ a versão, a remoção ou a mudança de significado de um campo muda a versão):
     estava em dia (``skipped``) e os bytes transferidos. Vêm do callback de
     progresso do cliente de download; ``null`` quando o fetcher substitui o
     download por código próprio e a medição não existe.
+``skipped_items``
+    Lista de ``{"id", "reason"}`` (até 100) das entradas que o host deixou de
+    baixar de propósito e que contam em ``succeeded``/``skipped``, não em
+    ``failed``. Hoje o único motivo é ``"pending-publication"``: a entrada
+    marcada com ``pending_publication`` respondeu 404 (a fonte ainda não
+    publicou o período). Lista vazia quando não houve nenhuma.
+``empty_groups``
+    Grupos pedidos que devolveram zero entradas enquanto outros tinham
+    entradas (aviso em WARNING, não erro), exceto os que o plugin declarou
+    vazios por desenho (``expected_empty_groups``). Lista vazia no caso comum.
+    Se o catálogo inteiro vier vazio o comando sai com 1, ``error`` diz
+    ``catálogo vazio para <grupos>`` e este campo traz os mesmos grupos.
 ``errors``
     Lista de ``{"id", "message"}`` (até 100; ``errors_truncated`` indica corte).
 ``error``
@@ -101,6 +113,7 @@ class DownloadStats:
         self.failed_count = 0
         self.transferred = 0
         self.bytes = 0
+        self.skipped_items: list[tuple[str, str]] = []
 
     def track(self) -> _EntryProgress:
         """Callback de progresso de UMA entrada; encaminhe-o ao download."""
@@ -116,6 +129,16 @@ class DownloadStats:
     def failed(self) -> None:
         with self._lock:
             self.failed_count += 1
+
+    def skipped(self, entry_id: str, reason: str) -> None:
+        """Entrada que não foi baixada de propósito (conta como sucesso).
+
+        Entra em ``succeeded`` sem ter aberto transferência, portanto também em
+        ``skipped``; ``reason`` fica em ``skipped_items``.
+        """
+        with self._lock:
+            self.succeeded_count += 1
+            self.skipped_items.append((entry_id, reason))
 
 
 class _EntryProgress:
@@ -209,6 +232,7 @@ class SummaryRecorder:
         self.succeeded: int | None = None
         self.errors: list[tuple[str, str]] | None = None
         self.error: str | None = None
+        self.empty_groups: list[str] = []
         self.interrupted = False
         self._started = dt.datetime.now(dt.UTC)
         self._previous_sigterm: Any = None
@@ -282,6 +306,7 @@ class SummaryRecorder:
             downloaded = stats.transferred
             bytes_downloaded = stats.bytes
             skipped = max(succeeded - downloaded, 0)
+        skipped_items = list(stats.skipped_items) if stats is not None else []
         total = self.total
         if total is None and succeeded is not None and failed is not None:
             total = succeeded + failed
@@ -313,6 +338,11 @@ class SummaryRecorder:
             "downloaded": downloaded,
             "skipped": skipped,
             "bytes_downloaded": bytes_downloaded,
+            "skipped_items": [
+                {"id": str(eid), "reason": str(reason)}
+                for eid, reason in skipped_items[:MAX_ERRORS]
+            ],
+            "empty_groups": list(self.empty_groups),
             "errors": [
                 {"id": str(eid), "message": str(msg)[:MAX_MESSAGE_CHARS]}
                 for eid, msg in errors[:MAX_ERRORS]

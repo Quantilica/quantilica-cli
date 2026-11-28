@@ -621,13 +621,23 @@ def test_convert_passes_dataset_and_force_when_accepted(tmp_path: Path):
 
     result = runner.invoke(
         _grouped(app.app),
-        ["fd", "convert", "--dataset", "a", "--dataset", "b", "--force"],
+        [
+            "fd",
+            "convert",
+            "-i",
+            str(tmp_path),
+            "--dataset",
+            "a",
+            "--dataset",
+            "b",
+            "--force",
+        ],
     )
     assert result.exit_code == 0, result.output
     assert seen == {"dataset": ["a", "b"], "force": True}
 
 
-def test_convert_kwargs_func_receives_dataset_and_force():
+def test_convert_kwargs_func_receives_dataset_and_force(tmp_path: Path):
     app = make_app()
     seen: dict = {}
 
@@ -635,12 +645,12 @@ def test_convert_kwargs_func_receives_dataset_and_force():
     def conv(input: Path, lake: Path, **kwargs) -> None:
         seen.update(kwargs)
 
-    result = runner.invoke(_grouped(app.app), ["fd", "convert"])
+    result = runner.invoke(_grouped(app.app), ["fd", "convert", "-i", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert seen == {"dataset": None, "force": False}
 
 
-def test_convert_legacy_two_arg_func_ignores_unused_defaults():
+def test_convert_legacy_two_arg_func_ignores_unused_defaults(tmp_path: Path):
     app = make_app()
     calls: list[tuple[Path, Path]] = []
 
@@ -648,24 +658,28 @@ def test_convert_legacy_two_arg_func_ignores_unused_defaults():
     def conv(input: Path, lake: Path) -> None:
         calls.append((input, lake))
 
-    result = runner.invoke(_grouped(app.app), ["fd", "convert"])
+    result = runner.invoke(_grouped(app.app), ["fd", "convert", "-i", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert len(calls) == 1
 
 
 @pytest.mark.parametrize("flags", [["--dataset", "x"], ["--force"]])
-def test_convert_legacy_func_rejects_requested_unsupported_flag(flags: list[str]):
+def test_convert_legacy_func_rejects_requested_unsupported_flag(
+    flags: list[str], tmp_path: Path
+):
     app = make_app()
 
     @app.command_convert
     def conv(input: Path, lake: Path) -> None: ...
 
-    result = runner.invoke(_grouped(app.app), ["fd", "convert", *flags])
+    result = runner.invoke(
+        _grouped(app.app), ["fd", "convert", "-i", str(tmp_path), *flags]
+    )
     assert result.exit_code == 2
     assert "não suporta" in result.output
 
 
-def test_convert_summary_from_object_and_exit_0_without_errors():
+def test_convert_summary_from_object_and_exit_0_without_errors(tmp_path: Path):
     from types import SimpleNamespace
 
     app = make_app()
@@ -674,34 +688,34 @@ def test_convert_summary_from_object_and_exit_0_without_errors():
     def conv(input: Path, lake: Path):
         return SimpleNamespace(converted=3, skipped=2, errors=0)
 
-    result = runner.invoke(_grouped(app.app), ["fd", "convert"])
+    result = runner.invoke(_grouped(app.app), ["fd", "convert", "-i", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert "convertidos" in result.output
     assert "pulados" in result.output
     assert "Conversão concluída" in result.output
 
 
-def test_convert_summary_from_dict_with_errors_exits_1():
+def test_convert_summary_from_dict_with_errors_exits_1(tmp_path: Path):
     app = make_app()
 
     @app.command_convert
     def conv(input: Path, lake: Path):
         return {"converted": ["a"], "skipped": [], "errors": ["boom [x]"]}
 
-    result = runner.invoke(_grouped(app.app), ["fd", "convert"])
+    result = runner.invoke(_grouped(app.app), ["fd", "convert", "-i", str(tmp_path)])
     assert result.exit_code == 1
     assert "boom [x]" in result.output
     assert "com erros" in result.output
 
 
-def test_convert_unrelated_return_value_is_ignored():
+def test_convert_unrelated_return_value_is_ignored(tmp_path: Path):
     app = make_app()
 
     @app.command_convert
     def conv(input: Path, lake: Path):
         return 42
 
-    result = runner.invoke(_grouped(app.app), ["fd", "convert"])
+    result = runner.invoke(_grouped(app.app), ["fd", "convert", "-i", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert "convertidos" not in result.output
 

@@ -96,6 +96,8 @@ def derive_fetcher_info(name: str) -> FetcherInfo:
 
 __all__ = [
     "EXIT_SYNC_PARTIAL",
+    "PENDING_PUBLICATION_KEY",
+    "PENDING_PUBLICATION_REASON",
     "SYNC_WORKERS_ENVVAR",
     "derive_fetcher_info",
     "CheckPlan",
@@ -116,6 +118,13 @@ __all__ = [
 # nada baixou, o código é 1 (falha total). 124/130/143 já são de timeout/sinal, e
 # 75/78 (EX_TEMPFAIL/EX_CONFIG, do sysexits) ficam para quem agenda a execução.
 EXIT_SYNC_PARTIAL = 3
+
+# Marca na entrada do catálogo (``entry["pending_publication"] = True``): o
+# período corrente é gerado antes de a fonte publicá-lo (virada de ano/mês). Um
+# 404 nessa entrada (em todas as URLs dela) não é erro: o ``sync`` a conta como
+# pulada, com este motivo, e o ``check`` a devolve como ``skip-unavailable``.
+PENDING_PUBLICATION_KEY = "pending_publication"
+PENDING_PUBLICATION_REASON = "pending-publication"
 
 # Variável de ambiente que define ``--workers`` do ``sync``/``pipeline`` sem
 # argumento extra na linha de comando (um agendador nem sempre consegue passar flags). A flag
@@ -223,6 +232,22 @@ def _short_remote(item: CheckPlanItem) -> str:
 _PROBE_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 _PROBE_ATTEMPTS = 3
 _PROBE_BACKOFF_S = 1.0
+
+
+def _is_pending_publication(entry: Mapping[str, Any]) -> bool:
+    """``True`` se a entrada traz a marca ``pending_publication``."""
+    return bool(entry.get(PENDING_PUBLICATION_KEY))
+
+
+def _is_not_found(exc: BaseException | None) -> bool:
+    """``True`` se ``exc`` (ou algo da sua cadeia) é um ``HttpStatusError`` 404."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, HttpStatusError) and exc.status_code == 404:
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
 
 
 class _ProbeNotFoundError(Exception):
@@ -547,7 +572,26 @@ class FetcherApp:
         build_default_commands: If True (default), registers the built-in
             ``sync`` and ``list`` commands. Set to False to register only
             custom commands via :meth:`attach_command`.
-        client: HTTP or FTP client instance. Defaults to default_client().
+        expected_empty_groups: Grupos que, por desenho, podem devolver zero
+            entradas de ``list_datasets`` (ex.: um grupo só de catálogo, sem
+            arquivo para baixar). O ``sync``/``check`` sem essa declaração
+            trata catálogo inteiro vazio como erro (saída 1, "catálogo vazio
+            para <grupos>") e grupo vazio isolado como aviso (``empty_groups``
+            no ``--summary-json``); os grupos declarados aqui ficam fora das
+            duas regras. Só declare o que é vazio de verdade por desenho: um
+            grupo que esvazia porque a fonte mudou precisa continuar falhando.
+
+    Contrato de entrada do catálogo (cada ``dict`` devolvido por
+    ``list_datasets``), além de ``url``/``id``/``group``:
+
+    * ``pending_publication``: ``True`` marca a entrada do período corrente
+      que o catálogo gera antes de a fonte publicá-lo (virada de ano/mês).
+      Um 404 em todas as URLs dessa entrada deixa de ser erro: o ``sync`` a
+      conta como pulada (motivo ``pending-publication``, log em INFO, sem
+      efeito no código de saída) e o ``check`` a devolve como
+      ``skip-unavailable``/``pending-publication``. Sem a marca, 404 segue
+      sendo erro do arquivo. Outros erros (403, 5xx, rede) continuam erros
+      mesmo com a marca.
     """
 
     # Contadores do último ``download_datasets`` (para o ``--summary-json``);
@@ -570,6 +614,7 @@ class FetcherApp:
         freshness_policy: Any = None,
         info: FetcherInfo | None = None,
         build_default_commands: bool = True,
+        expected_empty_groups: Iterable[str] = (),
     ):
         self.name = name
         self.help = help
@@ -586,6 +631,7 @@ class FetcherApp:
         self.info_declared = info is not None
         self.info: FetcherInfo = info or derive_fetcher_info(name)
 
+        self.expected_empty_groups: frozenset[str] = frozenset(expected_empty_groups)
         self.all_group_keys = list(self.groups.keys())
         self.all_keys = self.all_group_keys + list(self.aliases.keys())
         self.resolve_groups = make_resolve_groups(groups_dict, aliases_dict)
@@ -685,6 +731,13 @@ class FetcherApp:
                         f"[red]Erro:[/red] este conversor não suporta --{name}."
                     )
                     raise typer.Exit(2)
+        # Entrada ausente não é "nada a converter": alguns conversores devolvem
+        # resultado vazio sem erro nesse caso, e o lake ficaria sem aviso.
+        if not input.exists():
+            message = f"diretório de entrada do conversor não existe: {input}"
+            get_console().print(f"[red]Erro:[/red] {escape(message)}")
+            logger.error("[convert] %s", message)
+            raise typer.Exit(1)
         # O conversor lê só a versão vigente de cada arquivo bruto, nunca todas
         # as versões carimbadas da pasta. Quem escolhe a vigente por conta própria
         # (``selects_versions = True``) recebe a pasta original.
@@ -972,15 +1025,29 @@ class FetcherApp:
             sync_extra: dict[str, Any] = {}
 
             console.print(Rule("[bold]Passo 1/2: Download[/bold]"))
-            sync_cmd = self._registered_sync()
+            # O 'sync' efetivo: o que o typer resolve pelo nome (o último
+            # registrado), padrão ou do plugin, chamado só com o que ele aceita.
+            sync_callback = self._registered_sync()
+            sync_cmd = self._sync_command() if sync_callback is not None else None
             if sync_cmd is None:
                 console.print(
                     "[red]Erro:[/red] pipeline requer o comando 'sync' "
                     "(build_default_commands=True)."
                 )
                 raise typer.Exit(1) from None
+            sync_kwargs = self._pipeline_sync_kwargs(
+                sync_cmd,
+                ctx,
+                groups=groups,
+                output=actual_output,
+                dry_run=dry_run,
+                workers=workers,
+                verbose=verbose,
+            )
+            if sync_kwargs is None:
+                raise typer.Exit(2)
             if summary_json is not None:
-                if _sync_accepts_summary_json(sync_cmd):
+                if _sync_accepts_summary_json(sync_callback):
                     sync_extra["summary_json"] = summary_json
                 else:
                     print(
@@ -990,15 +1057,10 @@ class FetcherApp:
                     )
             sync_partial = False
             try:
-                ctx.invoke(
-                    sync_cmd,
-                    groups=groups,
-                    output=actual_output,
-                    dry_run=dry_run,
-                    workers=workers,
-                    verbose=verbose,
-                    **sync_extra,
-                )
+                # O callback do typer preenche com o padrão do click o que não vai
+                # nos argumentos (sem os OptionInfo dos padrões em estilo
+                # 'x: T = typer.Option(...)').
+                ctx.invoke(sync_cmd.callback, **sync_kwargs, **sync_extra)
             except typer.Exit as exc:
                 # Falha parcial não impede converter o que já baixou; o código
                 # parcial é devolvido ao final. Falha total ou outros códigos
@@ -1141,6 +1203,20 @@ class FetcherApp:
             unit_call_kwargs = {k: v for k, v in kwargs.items() if k in params}
             unit_list = list(units(*unit_call_args, **unit_call_kwargs))
             total = len(unit_list)
+            # Falha de unidade que a lista atual não gera mais (ex.: uma unidade
+            # de erro de uma listagem que agora funciona) nunca vai rodar de
+            # novo: não pode prender o backfill em saída 1 para sempre.
+            current_units = set(unit_list)
+            vanished = [u for u in failed if u not in current_units]
+            for unit in vanished:
+                del failed[unit]
+            if vanished:
+                logger.info(
+                    "[backfill] %d falha(s) do checkpoint de unidade(s) fora da "
+                    "lista atual, descartada(s): %s",
+                    len(vanished),
+                    ", ".join(vanished[:10]) + (" ..." if len(vanished) > 10 else ""),
+                )
             remaining = [u for u in unit_list if u not in completed]
             console.print(
                 f"Iniciando {name}: {len(remaining)}/{total} unidades pendentes."
@@ -1458,6 +1534,18 @@ class FetcherApp:
                     stats.succeeded(measured)
                     return True
             except Exception as exc:
+                eid = str(entry.get("id", "unknown"))
+                if _is_pending_publication(entry) and _is_not_found(exc):
+                    # Período corrente que a fonte ainda não publicou: não é
+                    # erro do arquivo (não afeta o código de saída).
+                    logger.info(
+                        "[sync] %s ainda não publicado pela fonte (404); "
+                        "entrada pulada (%s).",
+                        eid,
+                        PENDING_PUBLICATION_REASON,
+                    )
+                    stats.skipped(eid, PENDING_PUBLICATION_REASON)
+                    return True
                 stats.failed()
                 errors.append((entry.get("id", "unknown"), str(exc)))
                 return False
@@ -1540,6 +1628,13 @@ class FetcherApp:
         if head is None:
             local = self.path_builder(output_dir, entry, None)
             if not_found == len(urls_to_try):
+                pending = _is_pending_publication(entry)
+                if pending:
+                    logger.info(
+                        "[check] %s ainda não publicado pela fonte (404): %s",
+                        eid,
+                        PENDING_PUBLICATION_REASON,
+                    )
                 return CheckPlanItem(
                     dataset=dataset,
                     id=eid,
@@ -1551,7 +1646,7 @@ class FetcherApp:
                     remote_size=None,
                     local_exists=local.exists(),
                     action="skip-unavailable",
-                    reason="remote-404",
+                    reason=PENDING_PUBLICATION_REASON if pending else "remote-404",
                     entry=dict(entry),
                 )
             return CheckPlanItem(
@@ -1802,6 +1897,63 @@ class FetcherApp:
             items=[item for item in results if item is not None],
         )
 
+    def _list_catalog(
+        self, target_groups: list[str]
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """Entradas dos grupos pedidos e os grupos que não devolveram nenhuma."""
+        entries: list[dict[str, Any]] = []
+        empty: list[str] = []
+        for group in target_groups:
+            found = list(self.list_datasets(group))
+            if not found:
+                empty.append(group)
+            entries.extend(found)
+        return entries, empty
+
+    def _guard_catalog(
+        self,
+        target_groups: list[str],
+        entries: list[dict[str, Any]],
+        empty: list[str],
+        *,
+        console: Console,
+        recorder: SummaryRecorder | None = None,
+    ) -> None:
+        """Catálogo vazio não é sucesso (``sync`` e ``check``).
+
+        * Nenhuma entrada em nenhum grupo pedido: erro, saída 1, "catálogo
+          vazio para <grupos>" (e ``error`` no ``--summary-json``). Exceção: todos
+          os grupos pedidos estão em ``expected_empty_groups``.
+        * Algum grupo vazio com os outros cheios: aviso em WARNING e
+          ``empty_groups`` no resumo; não muda o código de saída. Os grupos de
+          ``expected_empty_groups`` não entram.
+        """
+        expected = self.expected_empty_groups
+        unexpected = [g for g in empty if g not in expected]
+        if not entries:
+            if target_groups and all(g in expected for g in target_groups):
+                logger.info(
+                    "[catálogo] sem entradas em %s (vazio por desenho)",
+                    ", ".join(target_groups),
+                )
+                return
+            culprits = unexpected or target_groups
+            label = ", ".join(culprits) if culprits else "(nenhum grupo)"
+            message = f"catálogo vazio para {label}"
+            console.print(f"[red]Erro:[/red] {escape(message)}")
+            logger.error("[catálogo] %s", message)
+            if recorder is not None:
+                recorder.error = message
+                recorder.empty_groups = list(unexpected)
+            raise typer.Exit(1)
+        if unexpected:
+            logger.warning(
+                "[catálogo] grupo(s) sem entradas: %s (os demais têm entradas)",
+                ", ".join(unexpected),
+            )
+            if recorder is not None:
+                recorder.empty_groups = list(unexpected)
+
     def _run_sync(
         self,
         recorder: SummaryRecorder,
@@ -1828,6 +1980,13 @@ class FetcherApp:
                 console.print(f"[red]Plano inválido: {exc}[/red]")
                 recorder.error = f"Plano inválido: {exc}"
                 raise typer.Exit(1) from None
+            if not plan.items:
+                # Um plano sem nenhuma entrada verificada só sai de um catálogo
+                # vazio: não é "nada a baixar".
+                message = f"plano sem nenhuma entrada verificada: {from_plan}"
+                console.print(f"[red]Erro:[/red] {escape(message)}")
+                recorder.error = message
+                raise typer.Exit(1)
             entries = [
                 self.entry_from_plan(dict(item.entry))
                 for item in plan.items
@@ -1846,7 +2005,10 @@ class FetcherApp:
                 recorder.error = str(exc)
                 raise typer.Exit(1) from None
 
-            entries = [e for g in target_groups for e in self.list_datasets(g)]
+            entries, empty = self._list_catalog(target_groups)
+            self._guard_catalog(
+                target_groups, entries, empty, console=console, recorder=recorder
+            )
 
         recorder.total = len(entries)
 
@@ -1874,6 +2036,21 @@ class FetcherApp:
         console.print(
             f"\n[green]Concluído:[/green] {downloaded}/{total} arquivo(s) baixado(s)."
         )
+        pending = [
+            eid
+            for eid, reason in (
+                self.last_download_stats.skipped_items
+                if self.last_download_stats is not None
+                else []
+            )
+            if reason == PENDING_PUBLICATION_REASON
+        ]
+        if pending:
+            console.print(
+                f"[dim]{len(pending)} entrada(s) ainda não publicada(s) pela fonte "
+                f"(404 tolerado, contadas como puladas): "
+                f"{escape(', '.join(pending))}[/dim]"
+            )
         if errors:
             console.print(f"[red]{len(errors)} erro(s):[/red]")
             for eid, emsg in errors:
@@ -1883,15 +2060,115 @@ class FetcherApp:
             raise typer.Exit(EXIT_SYNC_PARTIAL if downloaded > 0 else 1)
 
     def _registered_sync(self) -> Callable[..., Any] | None:
-        """Callback do comando ``sync`` registrado neste app, se houver."""
-        return next(
-            (
-                cmd.callback
-                for cmd in self.app.registered_commands
-                if cmd.name == "sync"
-            ),
-            None,
-        )
+        """Callback do comando ``sync`` efetivo neste app, se houver.
+
+        Quando mais de um ``sync`` foi registrado (o padrão do ``FetcherApp`` e
+        um do plugin, por exemplo), o typer fica com o ÚLTIMO de cada nome; é
+        esse que o usuário executa e que o ``pipeline`` precisa chamar.
+        """
+        found: Callable[..., Any] | None = None
+        for cmd in self.app.registered_commands:
+            callback = cmd.callback
+            name = cmd.name
+            if name is None and callback is not None:
+                # nome padrão do typer: o da função, com "_" virando "-"
+                name = callback.__name__.lower().replace("_", "-")
+            if name == "sync" and callback is not None:
+                found = callback
+        return found
+
+    def _sync_command(self) -> Any | None:
+        """O comando ``sync`` como o typer o resolve por nome (objeto do click)."""
+        try:
+            root = typer.main.get_command(self.app)
+        except Exception:  # noqa: BLE001 - app sem comandos/typer incompatível
+            return None
+        commands = getattr(root, "commands", None)
+        return commands.get("sync") if commands else None
+
+    @staticmethod
+    def _pipeline_sync_kwargs(
+        sync_cmd: Any,
+        ctx: typer.Context,
+        *,
+        groups: list[str] | None,
+        output: Path,
+        dry_run: bool,
+        workers: int,
+        verbose: bool,
+    ) -> dict[str, Any] | None:
+        """Argumentos do ``pipeline`` que o ``sync`` efetivo sabe receber.
+
+        Só repassa o que o comando do click declara. O que o ``pipeline``
+        precisa de verdade (``output``, ``--dry-run`` pedido, grupos pedidos)
+        e o ``sync`` não aceita é erro claro (mensagem em stdout, retorna
+        ``None``); ``workers`` e ``verbose`` são opcionais e ficam de fora sem
+        erro (``--workers`` na linha de comando avisa em stderr).
+
+        Os grupos vão para o parâmetro ``groups`` ou, se não houver, para o
+        único argumento posicional variádico do ``sync`` (ex.: ``datasets``).
+        """
+        console = get_console()
+        params = {p.name: p for p in sync_cmd.params if p.name}
+        kwargs: dict[str, Any] = {}
+
+        def refuse(what: str) -> None:
+            console.print(
+                f"[red]Erro:[/red] o 'sync' deste fetcher não aceita {what}, "
+                "que o pipeline precisa repassar; rode 'sync' e 'convert' em "
+                "separado."
+            )
+
+        if "output" not in params:
+            refuse("-o/--output")
+            return None
+        kwargs["output"] = output
+
+        if "dry_run" in params:
+            kwargs["dry_run"] = dry_run
+        elif dry_run:
+            refuse("--dry-run")
+            return None
+
+        if groups:
+            target = "groups" if "groups" in params else None
+            if target is None:
+                variadic = [
+                    n
+                    for n, p in params.items()
+                    if getattr(p, "param_type_name", "") == "argument"
+                    and getattr(p, "nargs", 1) == -1
+                ]
+                if len(variadic) == 1:
+                    target = variadic[0]
+            if target is None:
+                refuse("grupos como argumento")
+                return None
+            kwargs[target] = groups
+
+        if "workers" in params:
+            kwargs["workers"] = workers
+        else:
+            source = ctx.get_parameter_source("workers")
+            if source is not None and source.name == "COMMANDLINE":
+                print(
+                    "[Aviso] o 'sync' deste fetcher não aceita --workers; "
+                    "o pipeline segue sem a opção.",
+                    file=sys.stderr,
+                )
+        if "verbose" in params:
+            kwargs["verbose"] = verbose
+        required = [
+            f"--{n.replace('_', '-')}"
+            if getattr(p, "param_type_name", "") != "argument"
+            else n
+            for n, p in params.items()
+            if getattr(p, "required", False) and n not in kwargs
+        ]
+        if required:
+            refuse(f"rodar sem {', '.join(required)} (obrigatório no 'sync' dele)")
+            return None
+        return kwargs
 
     def _build_commands(self) -> None:
         console = get_console()
@@ -2013,7 +2290,8 @@ class FetcherApp:
                 console.print(f"Grupos válidos: {', '.join(self.all_keys)}")
                 raise typer.Exit(1) from None
 
-            entries = [e for g in target_groups for e in self.list_datasets(g)]
+            entries, empty = self._list_catalog(target_groups)
+            self._guard_catalog(target_groups, entries, empty, console=console)
             plan = self.check_datasets(entries, actual_output, workers=workers)
 
             if out is not None:

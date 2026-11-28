@@ -108,7 +108,8 @@ def test_command_convert_defaults_to_lake_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv("QUANTILICA_LAKE_DIR", str(tmp_path / "lake"))
-    app = make_app()
+    (tmp_path / "raw").mkdir()
+    app = make_app(default_output=tmp_path / "raw")
     calls: list[tuple[Path, Path]] = []
 
     @app.command_convert
@@ -143,7 +144,9 @@ def test_command_convert_verbose_sets_logging(tmp_path: Path):
     def conv(input: Path, output: Path) -> None:
         raise typer.Exit(3)
 
-    result = runner.invoke(_grouped(app.app), ["fd", "convert", "--verbose"])
+    result = runner.invoke(
+        _grouped(app.app), ["fd", "convert", "-i", str(tmp_path), "--verbose"]
+    )
     assert result.exit_code == 3
 
 
@@ -156,6 +159,7 @@ def test_command_pipeline_runs_both_steps(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     app = make_app()
+    (tmp_path / "raw").mkdir()
     calls: list[tuple[Path, Path]] = []
     sync_calls: list[tuple[list, Path, int]] = []
 
@@ -242,6 +246,7 @@ def test_command_pipeline_lake_defaults_to_lake_root(
 ):
     monkeypatch.setenv("QUANTILICA_LAKE_DIR", str(tmp_path / "lake"))
     app = make_app()
+    (tmp_path / "raw").mkdir()
     monkeypatch.setattr(
         app, "download_datasets", lambda entries, output_dir, workers=4: (0, 0, [])
     )

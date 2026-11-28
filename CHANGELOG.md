@@ -7,6 +7,18 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+### Adicionado
+
+- **Catálogo vazio não é sucesso.** `sync` e `check` saem com 1 e dizem `catálogo vazio para <grupos>` quando `list_datasets` não devolve nenhuma entrada para os grupos pedidos (o motivo vai em `error` do `--summary-json`, que também ganha `empty_groups`). Grupo vazio isolado, com os outros cheios, vira aviso em WARNING e entra em `empty_groups`, sem mudar o código de saída. `sync --from-plan` com um plano sem nenhuma entrada verificada também sai com 1. Um grupo vazio por desenho se declara no construtor, `FetcherApp(..., expected_empty_groups=[...])` (fica fora do aviso e da regra; se todos os grupos pedidos estão declarados, o `sync` sai com 0).
+- **Entrada ainda não publicada.** A entrada do catálogo marcada com `pending_publication = True` tem o 404 tolerado: o `sync` a conta como pulada (`skipped`, com `skipped_items: [{"id", "reason": "pending-publication"}]` no `--summary-json` e log em INFO) e o código de saída não muda; o `check` a devolve como `skip-unavailable`, motivo `pending-publication`. Sem a marca nada muda, e outros erros HTTP (403, 5xx) seguem como erro com ou sem ela. Constantes `PENDING_PUBLICATION_KEY` e `PENDING_PUBLICATION_REASON` em `quantilica.cli.sdk`.
+- `--summary-json`: campos `empty_groups` e `skipped_items` (a versão do esquema continua 1: só campos novos).
+
+### Corrigido
+
+- `<fetcher> pipeline` chamava o primeiro `sync` registrado, não o que o `typer` resolve pelo nome (o último): um plugin com `sync` próprio (`datasus`, por exemplo) rodava o `sync` padrão, e um com `build_default_commands=False` (`tse`) caía em `TypeError: ... unexpected keyword argument 'groups'`. Agora o `pipeline` usa o `sync` efetivo e repassa só os argumentos que ele declara (`groups` ou o único argumento variádico, `-o/--output`, `--dry-run`, `--workers`, `--verbose`, `--summary-json`). O que o `sync` não aceita e o `pipeline` precisa repassar (`-o/--output`, `--dry-run` pedido, grupos pedidos, opção obrigatória sem padrão) sai com 2 e uma mensagem clara, em vez de `TypeError` ou de baixar de verdade num `--dry-run`; `--workers` e `--verbose` não aceitos são omitidos (`--workers` na linha de comando avisa em stderr).
+- `<fetcher> convert` e o passo 2 do `pipeline` saem com 1 e `diretório de entrada do conversor não existe: <caminho>` quando a pasta de entrada não existe, sem chamar o conversor (alguns devolviam resultado vazio e saíam com 0). Pasta existente: sem mudança.
+- `command_backfill`: a falha guardada no checkpoint de uma unidade que a lista atual não gera mais (uma unidade de erro de uma listagem que falhou na execução anterior) não prende mais o backfill em saída 1 com `--resume`; só contam as falhas de unidades da lista atual, e as descartadas ficam em INFO.
+
 ### Corrigido
 
 - README: os exemplos de `sync` usavam argumentos que não existem (`comex sync 2024`, `inmet sync 2020 2021`, `td sync --dataset prices`); o `sync` recebe grupos ou apelidos de grupo (`comex sync trade-exp`, `inmet sync bdmep`, `td sync prices`). A instalação dos fetchers passa a ser `quantilica install <fonte>` (eles não estão no PyPI), e a do extra `lake` indica o índice próprio, de onde vem o `quantilica-analytics`. Entram os comandos que faltavam (`install`, `uninstall`, `doctor`, `health`, `manifests`, `registry`, `docs`).

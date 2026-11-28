@@ -70,6 +70,35 @@ atômica, também quando o comando falha (com o motivo em `error`), e a opção 
 o código de saída. `pipeline --summary-json` repassa a opção ao passo de download.
 O contrato completo está no docstring de `quantilica.cli.summary`.
 
+### Regras do `sync` para autores de fetcher
+
+O `sync` (e o `check`) do `FetcherApp` não aceita em silêncio um catálogo que esvaziou:
+
+- **Catálogo vazio é erro.** Se `list_datasets` não devolve nenhuma entrada para os grupos
+  pedidos, o `sync` sai com 1 e diz `catálogo vazio para <grupos>` (também em `error` no
+  `--summary-json`). Se só alguns grupos vêm vazios e os outros têm entradas, é aviso em
+  WARNING e o campo `empty_groups` do resumo. Um grupo que é vazio **por desenho** (por exemplo,
+  um grupo só de catálogo, sem arquivo para baixar) se declara no construtor:
+  `FetcherApp(..., expected_empty_groups=["ouvidoria"])`; esses grupos ficam fora do aviso e da
+  regra. Não declare um grupo que esvazia por falha da fonte: ele precisa continuar falhando.
+- **Entrada ainda não publicada.** Um catálogo que gera a entrada do período corrente antes de
+  a fonte publicá-lo (virada de ano ou de mês) marca a entrada com
+  `entry["pending_publication"] = True`. Um 404 nessa entrada (em todas as URLs dela) não é erro:
+  o `sync` a conta como pulada (`skipped`, com `{"id", "reason": "pending-publication"}` em
+  `skipped_items` do resumo e log em INFO) e o código de saída não muda; o `check` a devolve
+  como `skip-unavailable` com motivo `pending-publication`. Sem a marca, 404 segue sendo erro do
+  arquivo, e qualquer outro erro (403, 5xx, rede) também, com ou sem a marca.
+- **`pipeline`** chama o `sync` que o `typer` resolve pelo nome (o último registrado), só com os
+  argumentos que ele declara: `groups` (ou o único argumento variádico do `sync`), `-o/--output`,
+  `--dry-run`, `--workers`, `--verbose` e `--summary-json`. Um `sync` próprio que não aceita
+  `-o/--output`, que não aceita `--dry-run` quando ele foi pedido, que não aceita grupos pedidos ou
+  que tem opção obrigatória sem padrão faz o `pipeline` sair com 2 e uma mensagem clara.
+- **`convert`/`pipeline`** saem com 1 se o diretório de entrada do conversor não existe, sem
+  chamar o conversor.
+- **`backfill`**: as falhas guardadas no checkpoint só contam para unidades da lista atual; as
+  que sumiram da lista (por exemplo, uma unidade de erro de uma listagem que voltou a funcionar)
+  são descartadas com um INFO.
+
 ## Lake
 
 `quantilica lake` monta e audita o lake de Parquet a partir de um bruto local, sem

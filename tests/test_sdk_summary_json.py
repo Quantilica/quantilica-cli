@@ -312,6 +312,7 @@ def test_pipeline_repassa_a_opcao_ao_sync(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = make_app()
+    (tmp_path / "raw").mkdir()
     monkeypatch.setattr(app, "download_datasets", _fake(2, 2, []))
     converted: list[Path] = []
 
@@ -343,6 +344,7 @@ def test_pipeline_sem_a_opcao_nao_passa_nada_ao_sync(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = make_app()
+    (tmp_path / "raw").mkdir()
     monkeypatch.setattr(app, "download_datasets", _fake(1, 1, []))
 
     @app.command_pipeline
@@ -432,6 +434,7 @@ def test_pipeline_com_sync_proprio_sem_a_opcao_avisa_e_segue(
     tmp_path: Path,
 ) -> None:
     app = make_app(build_default_commands=False)
+    (tmp_path / "raw").mkdir()
     chamado: list[dict[str, Any]] = []
 
     @app.app.command("sync")
