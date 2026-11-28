@@ -103,7 +103,7 @@ O `sync` (e o `check`) do `FetcherApp` não aceita em silêncio um catálogo que
 - **Orçamento do HEAD de frescor.** Antes de cada arquivo, o `sync` faz um HEAD para carimbar o
   nome com o `Last-Modified`, e o `check` faz o dele para decidir se há o que baixar; ambos usam o
   orçamento do cliente do app (5 tentativas de até 180 s por padrão). Com a fonte fora do ar isso
-  são ~15 minutos por URL antes de qualquer erro (27 URLs no `check` levaram 82 minutos). O
+  são ~15 minutos por URL antes de qualquer erro. O
   construtor aceita um orçamento próprio e curto para esse HEAD (e só para ele: o download não
   muda): `FetcherApp(..., probe_timeout=30.0, probe_attempts=2, probe_retry_delay=1.0,
   probe_fail_fast_on_connect=True)`. Os três primeiros são tetos (vale o menor entre o parâmetro,
@@ -114,10 +114,17 @@ O `sync` (e o `check`) do `FetcherApp` não aceita em silêncio um catálogo que
   do resumo e sem tentar o download; no `check` o item sai `download` com motivo
   `metadata-unavailable: fonte inacessível (...)` (o plano continua completo e o
   `sync --from-plan` seguinte acusa o erro, em vez de o `check` o esconder como `skip-unavailable`).
-  Dentro de uma mesma execução o host que não conectou é lembrado, e as demais entradas dele
-  falham sem gastar o orçamento outra vez. Falha de HEAD que não é de conexão (status de erro,
-  resposta lenta, servidor sem HEAD) continua sem impedir o download. Sem nenhum `probe_*`, nada
-  muda. Quem sobrescrevia `_safe_head_date` para isso pode apagar a sobrescrita.
+  No `check`, o host só é dado como fora do ar com confirmação: uma segunda sonda, que começou
+  depois de registrada a primeira falha, também não conecta (sondas simultâneas falham juntas num
+  mesmo soluço e não confirmam). Dali em diante, e só naquela execução, as demais entradas do host
+  falham na hora, sem gastar o orçamento; qualquer resposta do host limpa a suspeita. O `sync` não
+  guarda memória de host: cada arquivo falha por si. Falha de HEAD que não é de conexão (status de
+  erro, resposta lenta, servidor sem HEAD) continua sem impedir o download, e um `Retry-After` do
+  servidor não estica a espera da sonda além de `probe_retry_delay`. Sem nenhum `probe_*`, nada
+  muda. Quem sobrescrevia `_safe_head_date` para isso pode apagar a sobrescrita. Para o
+  `sync --from-plan` acusar a fonte fora do ar, o plano precisa chegar a ele com o item
+  `download`: um reclassificador de plano que troca `download` por `skip-up-to-date` pela idade da
+  cópia local deve manter o item quando o motivo começa com `metadata-unavailable`.
 - **`pipeline`** chama o `sync` que o `typer` resolve pelo nome (o último registrado), só com os
   argumentos que ele declara: `groups` (ou o único argumento variádico do `sync`), `-o/--output`,
   `--dry-run`, `--workers`, `--verbose` e `--summary-json`. Um `sync` próprio que não aceita

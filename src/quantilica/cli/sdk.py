@@ -555,6 +555,15 @@ class _ProbeHttpClient(HttpClient):
             raise
 
 
+@dataclass
+class _HostCheck:
+    """Estado de um host na memória do ``check`` (ver ``_registrar_conexao_check``)."""
+
+    suspeita_desde: int
+    causa: str
+    confirmado: bool = False
+
+
 def _env_number(name: str, cast_to: Callable[[str], Any]) -> Any:
     """Valor numérico de uma variável de ambiente, ou ``None`` se ausente/inválido."""
     raw = os.environ.get(name, "").strip()
@@ -696,13 +705,17 @@ class FetcherApp:
             na hora (``fonte inacessível``), sem tentar o download; no
             ``check`` o item sai ``download`` com motivo
             ``metadata-unavailable: fonte inacessível (...)``, e o
-            ``sync --from-plan`` seguinte o acusa como erro. Durante uma
-            mesma execução (``sync`` ou ``check``), o host que falhou em
-            conectar é lembrado: as demais entradas dele falham na hora, sem
-            gastar o orçamento outra vez. Falha de HEAD que não é de conexão
+            ``sync --from-plan`` seguinte o acusa como erro. No ``check``, o
+            host só é dado como fora do ar com confirmação: uma segunda sonda,
+            que começou depois de registrada a primeira falha, também não
+            conecta (sondas simultâneas falham juntas num mesmo soluço e não
+            confirmam); daí em diante, e só naquela execução, as demais
+            entradas do host falham na hora, sem gastar o orçamento. Qualquer
+            resposta do host limpa a suspeita. O ``sync`` não guarda memória de
+            host: cada arquivo falha por si. Falha de HEAD que não é de conexão
             (status de erro, resposta lenta, servidor sem HEAD) continua sem
-            impedir o download.
-
+            impedir o download. ``ConnectError`` também cobre falha de TLS e de
+            DNS, daí a mensagem "sem conexão ou falha de TLS".
     Orçamento do HEAD de frescor: os quatro parâmetros ``probe_*`` valem para
     todo HEAD de frescor do host, e só para ele (o download mantém o orçamento
     do cliente). Os três primeiros são tetos: vale o menor entre o parâmetro, o
@@ -710,9 +723,10 @@ class FetcherApp:
     (``QUANTILICA_HTTP_TIMEOUT``, ``QUANTILICA_HTTP_ATTEMPTS``,
     ``QUANTILICA_HTTP_RETRY_DELAY``), quando definida. Sem nenhum ``probe_*``,
     o HEAD usa o cliente do app como sempre usou. Com uma fonte fora do ar, o
-    ``check`` leva, no pior caso, ``probe_attempts`` x ``probe_timeout``
-    por host (o resto das entradas do host falha na hora com
-    ``probe_fail_fast_on_connect``), e não mais 5 x 180 s por URL.
+    ``check`` gasta, no pior caso, duas rodadas de ``probe_attempts`` x
+    ``probe_timeout`` por thread (a primeira falha e a que a confirma), e não
+    5 x 180 s por URL. Um ``Retry-After`` do servidor não estica a espera da
+    sonda além de ``probe_retry_delay`` (quando declarado).
 
     Contrato de entrada do catálogo (cada ``dict`` devolvido por
     ``list_datasets``), além de ``url``/``id``/``group``:
@@ -779,9 +793,12 @@ class FetcherApp:
         self.probe_attempts = probe_attempts
         self.probe_retry_delay = probe_retry_delay
         self.probe_fail_fast_on_connect = probe_fail_fast_on_connect
-        # Hosts que não conectaram na execução em curso (``probe_fail_fast_on_connect``).
-        self._hosts_sem_conexao: dict[str, str] = {}
-        self._hosts_sem_conexao_lock = threading.Lock()
+        # Memória de host do ``check`` (``probe_fail_fast_on_connect``): ver
+        # ``_registro_host``. Só vale dentro de um ``check_datasets``.
+        self._hosts_check: dict[str, _HostCheck] = {}
+        self._hosts_check_lock = threading.Lock()
+        self._hosts_check_seq = 0
+        self._em_check_datasets = False
         self.all_group_keys = list(self.groups.keys())
         self.all_keys = self.all_group_keys + list(self.aliases.keys())
         self.resolve_groups = make_resolve_groups(groups_dict, aliases_dict)
@@ -1461,6 +1478,12 @@ class FetcherApp:
             limits=base.limits,
             emulate_browser=True,
         )
+        if self.probe_retry_delay is not None and hasattr(client, "_sleep"):
+            # Um ``Retry-After`` do servidor não pode esticar a espera da sonda
+            # além do teto declarado (vale só para este cliente).
+            real_sleep = client._sleep
+            cap = client.retry_base_delay
+            client._sleep = lambda seconds: real_sleep(min(seconds, cap))
         if base.host_policies:
             share = getattr(client, "share_host_state", None)
             if share is not None:
@@ -1479,40 +1502,72 @@ class FetcherApp:
         with probe as client:
             yield client
 
-    def _reset_hosts_sem_conexao(self) -> None:
-        with self._hosts_sem_conexao_lock:
-            self._hosts_sem_conexao.clear()
+    def _reset_hosts_check(self) -> None:
+        with self._hosts_check_lock:
+            self._hosts_check.clear()
 
-    def _guard_host_sem_conexao(self, url: str) -> None:
-        """Falha na hora se o host já não conectou nesta execução.
+    def _hosts_check_ticket(self) -> int:
+        """Número de ordem de uma sonda do ``check`` (cresce a cada início/falha)."""
+        with self._hosts_check_lock:
+            self._hosts_check_seq += 1
+            return self._hosts_check_seq
 
-        Só age com ``probe_fail_fast_on_connect``.
+    def _guard_host_check(self, url: str) -> None:
+        """Falha na hora se o ``check`` já confirmou o host fora do ar.
+
+        Só age com ``probe_fail_fast_on_connect``, e só no ``check``: o ``sync``
+        não guarda memória de host (cada arquivo falha por si).
 
         Raises:
-            FetchError: Se uma entrada anterior desta execução não conectou ao
-                host de ``url``.
+            FetchError: Se a queda do host de ``url`` foi confirmada nesta
+                execução do ``check``.
         """
         if not self.probe_fail_fast_on_connect:
             return
-        with self._hosts_sem_conexao_lock:
-            cause = self._hosts_sem_conexao.get(_host_key(url))
-        if cause is not None:
+        with self._hosts_check_lock:
+            registro = self._hosts_check.get(_host_key(url))
+        if registro is not None and registro.confirmado:
             raise FetchError(
-                f"fonte inacessível (sem conexão com o host nesta execução): "
-                f"{url}: {cause}"
+                "fonte inacessível (sem conexão ou falha de TLS, confirmada em "
+                f"duas sondas desta execução): {url}: {registro.causa}"
             )
 
+    def _registrar_conexao_check(
+        self, url: str, ticket: int, failure: BaseException | None
+    ) -> None:
+        """Atualiza a memória de host do ``check`` com o resultado de uma sonda.
+
+        A primeira falha de conexão só deixa o host sob suspeita. A queda só é
+        confirmada por uma segunda falha de uma sonda que COMEÇOU depois de a
+        primeira ser registrada (``ticket`` maior): sondas simultâneas falham
+        juntas no mesmo soluço e não confirmam nada. Qualquer resposta do host
+        (inclusive status de erro) limpa o registro.
+        """
+        if not self.probe_fail_fast_on_connect:
+            return
+        key = _host_key(url)
+        with self._hosts_check_lock:
+            if failure is None:
+                self._hosts_check.pop(key, None)
+                return
+            registro = self._hosts_check.get(key)
+            if registro is None:
+                self._hosts_check_seq += 1
+                self._hosts_check[key] = _HostCheck(
+                    suspeita_desde=self._hosts_check_seq, causa=repr(failure)
+                )
+            elif ticket > registro.suspeita_desde:
+                registro.confirmado = True
+
     def _sem_conexao(self, url: str, client: Any, failure: BaseException) -> FetchError:
-        """Registra o host como fora do ar e monta o erro de ``fonte inacessível``."""
+        """Monta o erro de ``fonte inacessível`` de um HEAD que não conectou."""
         cause = _connect_failure(failure) or failure
-        with self._hosts_sem_conexao_lock:
-            self._hosts_sem_conexao.setdefault(_host_key(url), repr(cause))
         attempts = getattr(client, "attempts", "?")
         timeout = getattr(client, "timeout", None)
         budget = f"{timeout:.0f} s" if isinstance(timeout, int | float) else "?"
         return FetchError(
-            f"fonte inacessível (sem conexão em {attempts} tentativa(s) de "
-            f"{budget}): {url}: {cause!r}"
+            f"fonte inacessível (sem conexão ou falha de TLS em {attempts} "
+            f"tentativa(s) de {budget}): {url}: {cause!r}"
         )
 
     def _safe_head_date(self, url: str) -> dt.date | None:
@@ -1539,7 +1594,6 @@ class FetcherApp:
                 # com HEAD — o timestamp do nome virá dos metadados da
                 # própria entrada, não de uma sondagem remota.
                 return None
-        self._guard_host_sem_conexao(url)
         with self._probe_scope() as client:
             last_modified = self._head_date_with(client, url, policy)
             failure = getattr(client, "connect_failure", None)
@@ -1759,7 +1813,6 @@ class FetcherApp:
         """
         console = get_console()
         total = len(entries)
-        self._reset_hosts_sem_conexao()
         overall = make_batch_progress(console)
         file_prog = make_download_progress(console)
         overall_task = overall.add_task("[cyan]Baixando...[/cyan]", total=total)
@@ -1889,12 +1942,17 @@ class FetcherApp:
         head = None
         head_error: Exception | None = None
         not_found = 0
+        if not self._em_check_datasets:
+            # Chamada avulsa: nada da memória de uma chamada anterior vale aqui.
+            self._reset_hosts_check()
         with self._probe_scope() as client:
             for url in urls_to_try:
+                ticket = self._hosts_check_ticket()
                 try:
-                    self._guard_host_sem_conexao(url)
+                    self._guard_host_check(url)
                     candidate = cast(HttpClient, client).head(url)  # só HTTP
                 except HttpStatusError as exc:
+                    self._registrar_conexao_check(url, ticket, None)
                     head_error = exc
                     if exc.status_code == 404:
                         not_found += 1
@@ -1913,13 +1971,17 @@ class FetcherApp:
                     break
                 except Exception as exc:  # noqa: BLE001 - metadata best effort
                     head_error = exc
-                    if self.probe_fail_fast_on_connect:
+                    if self.probe_fail_fast_on_connect and not isinstance(
+                        exc, FetchError
+                    ):
                         failure = _connect_failure(exc)
-                        if failure is not None and not isinstance(exc, FetchError):
-                            # Fonte fora do ar: o item segue como "download" (o
-                            # ``sync --from-plan`` o acusa), sem gastar mais nada.
+                        self._registrar_conexao_check(url, ticket, failure)
+                        if failure is not None:
+                            # Fonte possivelmente fora do ar: o item segue como
+                            # "download" (o ``sync --from-plan`` o acusa).
                             head_error = self._sem_conexao(url, client, exc)
                     break
+                self._registrar_conexao_check(url, ticket, None)
                 head = candidate
                 break
 
@@ -2172,24 +2234,30 @@ class FetcherApp:
             A :class:`CheckPlan` with one verdict per entry.
         """
         results: list[CheckPlanItem | None] = [None] * len(entries)
-        self._reset_hosts_sem_conexao()
+        self._reset_hosts_check()
+        self._em_check_datasets = True
 
         def _worker(index: int, entry: dict[str, Any]) -> None:
             results[index] = self._check_entry_isolated(entry, output_dir)
             if (index + 1) % 100 == 0 or index + 1 == len(entries):
                 logger.info("[check] %d/%d verificados", index + 1, len(entries))
 
-        with graceful_executor(max_workers=workers) as executor:
-            try:
-                futures = {
-                    executor.submit(_worker, index, entry): index
-                    for index, entry in enumerate(entries)
-                }
-                for future in concurrent.futures.as_completed(futures):
-                    future.result()
-            except KeyboardInterrupt:
-                get_console().print("\n[yellow]Interrompido.[/yellow]")
-                raise typer.Exit(130) from None
+        try:
+            with graceful_executor(max_workers=workers) as executor:
+                try:
+                    futures = {
+                        executor.submit(_worker, index, entry): index
+                        for index, entry in enumerate(entries)
+                    }
+                    for future in concurrent.futures.as_completed(futures):
+                        future.result()
+                except KeyboardInterrupt:
+                    get_console().print("\n[yellow]Interrompido.[/yellow]")
+                    raise typer.Exit(130) from None
+        finally:
+            # A memória de host é de uma execução: nada vaza para a seguinte.
+            self._em_check_datasets = False
+            self._reset_hosts_check()
 
         generated = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
         return CheckPlan(

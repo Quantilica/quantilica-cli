@@ -307,31 +307,162 @@ def _entries(n: int) -> list[dict[str, Any]]:
     ]
 
 
-def test_fail_fast_remembers_the_dead_host_within_a_run(tmp_path: Path, monkeypatch):
-    _clear_env(monkeypatch)
-    wire = _Wire(_connect_error)
+def _scripted(failing_calls: set[int], wire_calls: list[int] | None = None):
+    """Handler que não conecta nas chamadas numeradas (1, 2, ...) e responde nas outras."""
+    counter = {"n": 0}
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        counter["n"] += 1
+        if counter["n"] in failing_calls:
+            raise httpx2.ConnectError("sem rota", request=request)
+        if request.method == "HEAD":
+            return httpx2.Response(
+                200,
+                headers={
+                    "Content-Length": "10",
+                    "Last-Modified": "Mon, 01 Jan 2024 00:00:00 GMT",
+                },
+            )
+        return httpx2.Response(200, content=b"0123456789")
+
+    return handler
+
+
+def _fail_fast_app(handler, **kwargs: Any):
+    wire = _Wire(handler)
     app = make_app(
         client=_client(wire),
         probe_timeout=30.0,
         probe_attempts=2,
         probe_retry_delay=0.0,
         probe_fail_fast_on_connect=True,
+        **kwargs,
     )
+    return app, wire
+
+
+def test_check_confirms_a_real_outage_with_a_second_probe(tmp_path: Path, monkeypatch):
+    """Queda real: a 1a entrada deixa o host sob suspeita, a 2a confirma, o resto é rápido."""
+    _clear_env(monkeypatch)
+    app, wire = _fail_fast_app(_connect_error)
     plan = app.check_datasets(_entries(6), tmp_path, workers=1)
     assert [i.action for i in plan.items] == ["download"] * 6
     assert all(
         i.reason.startswith("metadata-unavailable: fonte inacessível")
         for i in plan.items
     )
-    assert len(wire.calls) == 2  # só a primeira entrada gastou o orçamento
+    assert (
+        len(wire.calls) == 4
+    )  # 2 sondas de 2 tentativas; as 4 restantes falham na hora
+    assert "confirmada" in plan.items[-1].reason
     # Outra execução recomeça do zero.
-    plan = app.check_datasets(_entries(2), tmp_path, workers=1)
-    assert len(wire.calls) == 4
+    app.check_datasets(_entries(2), tmp_path, workers=1)
+    assert len(wire.calls) == 8
 
-    wire.calls.clear()
+
+def test_check_short_hiccup_does_not_condemn_the_host(tmp_path: Path, monkeypatch):
+    """Soluço: só a 1a sonda falha; as demais conectam e o plano tem veredito real."""
+    _clear_env(monkeypatch)
+    app, wire = _fail_fast_app(_scripted({1, 2}))
+    plan = app.check_datasets(_entries(6), tmp_path, workers=1)
+    assert plan.items[0].reason.startswith("metadata-unavailable: fonte inacessível")
+    assert [i.reason for i in plan.items[1:]] == ["not-present"] * 5
+    assert len(wire.calls) == 7
+
+
+def test_check_simultaneous_failures_do_not_confirm(tmp_path: Path, monkeypatch):
+    """Sondas que começam juntas falham juntas no mesmo soluço: isso não confirma."""
+    import threading
+
+    _clear_env(monkeypatch)
+    barrier = threading.Barrier(4, timeout=10)
+    seen = {"n": 0}
+    lock = threading.Lock()
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        with lock:
+            seen["n"] += 1
+            n = seen["n"]
+        if n <= 4:
+            barrier.wait()  # as 4 primeiras sondas estão em voo ao mesmo tempo
+            raise httpx2.ConnectError("soluço", request=request)
+        return _scripted(set())(request)
+
+    app, wire = _fail_fast_app(handler)
+    app.probe_attempts = 1
+    plan = app.check_datasets(_entries(8), tmp_path, workers=4)
+    reasons = [i.reason for i in plan.items]
+    assert sum(r.startswith("metadata-unavailable") for r in reasons) == 4
+    assert sum(r == "not-present" for r in reasons) == 4
+    assert len(wire.calls) == 8
+
+
+def test_check_success_clears_the_suspicion(tmp_path: Path, monkeypatch):
+    _clear_env(monkeypatch)
+    # e0 falha (2 chamadas), e1 responde (3a), e2 falha (4a, 5a), e3 falha (6a, 7a) e
+    # confirma; e4 já cai na guarda. Sem a limpeza, e2 confirmaria e e3 nem sondaria.
+    app, wire = _fail_fast_app(_scripted({1, 2, 4, 5, 6, 7}))
+    plan = app.check_datasets(_entries(5), tmp_path, workers=1)
+    assert len(wire.calls) == 7
+    assert plan.items[1].reason == "not-present"
+    assert "confirmada" not in plan.items[3].reason
+    assert "confirmada" in plan.items[4].reason
+
+
+def test_check_memory_does_not_leak_between_calls(tmp_path: Path, monkeypatch):
+    from quantilica.cli.sdk import _HostCheck
+
+    _clear_env(monkeypatch)
+    app, wire = _fail_fast_app(_scripted(set()))
+    app._hosts_check["example.test:"] = _HostCheck(1, "ConnectError", confirmado=True)
+    item = app.check_entry(ENTRY, tmp_path)  # chamada avulsa: zera a memória
+    assert item.reason == "not-present"
+    assert len(wire.calls) == 1
+
+    app, wire = _fail_fast_app(_connect_error)
+    app.check_datasets(_entries(4), tmp_path, workers=1)
+    assert app._hosts_check == {}
+    assert app._em_check_datasets is False
+    item = app.check_entry(ENTRY, tmp_path)  # sem herdar a queda da execução anterior
+    assert "confirmada" not in item.reason
+    assert len(wire.calls) == 4 + 2
+
+
+def test_sync_has_no_host_memory(tmp_path: Path, monkeypatch):
+    """No ``sync`` cada arquivo falha por si: um soluço não derruba os seguintes."""
+    from quantilica.cli.sdk import _HostCheck
+
+    _clear_env(monkeypatch)
+    app, wire = _fail_fast_app(_scripted({1, 2}))
+    # Mesmo com o host marcado como caído pelo ``check``, o sync não consulta isso.
+    app._hosts_check["example.test:"] = _HostCheck(1, "ConnectError", confirmado=True)
+    downloaded, total, errors = app.download_datasets(_entries(4), tmp_path, workers=1)
+    assert (downloaded, total, len(errors)) == (3, 4, 1)
+    assert "fonte inacessível" in errors[0][1]
+
+    # --dry-run não levanta erro por memória de host
+    assert app.download_entry(ENTRY, tmp_path, dry_run=True).name.startswith(
+        "exp-monthly"
+    )
+
+    app, wire = _fail_fast_app(_connect_error)
     downloaded, total, errors = app.download_datasets(_entries(6), tmp_path, workers=1)
     assert (downloaded, total, len(errors)) == (0, 6, 6)
-    assert all("fonte inacessível" in msg for _, msg in errors)
+    assert wire.methods == ["HEAD"] * 12  # cada arquivo gasta o próprio orçamento
+
+
+def test_retry_after_is_capped_by_the_probe_retry_delay(tmp_path: Path, monkeypatch):
+    import time
+
+    _clear_env(monkeypatch)
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(503, headers={"Retry-After": "30"})
+
+    app, wire = _fail_fast_app(handler)
+    start = time.monotonic()
+    app.check_entry(ENTRY, tmp_path)
+    assert time.monotonic() - start < 5.0
     assert wire.methods == ["HEAD", "HEAD"]
 
 
