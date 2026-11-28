@@ -115,8 +115,9 @@ O `sync` (e o `check`) do `FetcherApp` não aceita em silêncio um catálogo que
   `metadata-unavailable: fonte inacessível (...)` (o plano continua completo e o
   `sync --from-plan` seguinte acusa o erro, em vez de o `check` o esconder como `skip-unavailable`).
   No `check`, o host só é dado como fora do ar com confirmação: uma segunda sonda, que começou
-  depois de registrada a primeira falha, também não conecta (sondas simultâneas falham juntas num
-  mesmo soluço e não confirmam). Dali em diante, e só naquela execução, as demais entradas do host
+  depois de registrada a primeira falha e pelo menos o timeout da sonda depois do início da que abriu
+  a suspeita, também não conecta (sondas simultâneas falham juntas num mesmo soluço, e um soluço de
+  DNS de poucos segundos acaba antes do prazo: nenhum dos dois confirma). Dali em diante, e só naquela execução, as demais entradas do host
   falham na hora, sem gastar o orçamento; qualquer resposta do host limpa a suspeita. O `sync` não
   guarda memória de host: cada arquivo falha por si. Falha de HEAD que não é de conexão (status de
   erro, resposta lenta, servidor sem HEAD) continua sem impedir o download, e um `Retry-After` do

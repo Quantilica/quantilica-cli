@@ -328,6 +328,35 @@ def _scripted(failing_calls: set[int], wire_calls: list[int] | None = None):
     return handler
 
 
+class _Clock:
+    """Relógio falso: o transporte o adianta, a memória de host o lê."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _ticking(clock: _Clock, cost: float, inner):
+    """Handler que gasta ``cost`` segundos do relógio falso a cada chamada."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        try:
+            return inner(request)
+        finally:
+            clock.now += cost
+
+    return handler
+
+
+def _clocked_app(inner, cost: float, **kwargs: Any):
+    clock = _Clock()
+    app, wire = _fail_fast_app(_ticking(clock, cost, inner), **kwargs)
+    app._clock = clock
+    return app, wire, clock
+
+
 def _fail_fast_app(handler, **kwargs: Any):
     wire = _Wire(handler)
     app = make_app(
@@ -344,7 +373,8 @@ def _fail_fast_app(handler, **kwargs: Any):
 def test_check_confirms_a_real_outage_with_a_second_probe(tmp_path: Path, monkeypatch):
     """Queda real: a 1a entrada deixa o host sob suspeita, a 2a confirma, o resto é rápido."""
     _clear_env(monkeypatch)
-    app, wire = _fail_fast_app(_connect_error)
+    # cada chamada "custa" 15 s: uma sonda de 2 tentativas gasta os 30 s do timeout
+    app, wire, _ = _clocked_app(_connect_error, 15.0)
     plan = app.check_datasets(_entries(6), tmp_path, workers=1)
     assert [i.action for i in plan.items] == ["download"] * 6
     assert all(
@@ -358,6 +388,61 @@ def test_check_confirms_a_real_outage_with_a_second_probe(tmp_path: Path, monkey
     # Outra execução recomeça do zero.
     app.check_datasets(_entries(2), tmp_path, workers=1)
     assert len(wire.calls) == 8
+
+
+def test_check_dns_blip_of_a_few_seconds_does_not_confirm(tmp_path: Path, monkeypatch):
+    """Soluço de 2,5 s com ConnectError quase instantâneo: nem a 2a sonda condena."""
+    _clear_env(monkeypatch)
+    clock = _Clock()
+
+    def inner(request: httpx2.Request) -> httpx2.Response:
+        if clock.now < 2.5:
+            raise httpx2.ConnectError("dns", request=request)
+        return httpx2.Response(200, headers={"Content-Length": "10"})
+
+    app, wire = _fail_fast_app(_ticking(clock, 0.5, inner))
+    app._clock = clock
+    plan = app.check_datasets(_entries(6), tmp_path, workers=1)
+    assert not any("confirmada" in i.reason for i in plan.items)
+    # as 2 primeiras sondas falharam (dentro do soluço); as demais têm veredito real
+    assert [i.reason.startswith("metadata-unavailable") for i in plan.items] == [
+        True,
+        True,
+        False,
+        False,
+        False,
+        False,
+    ]
+    assert plan.items[-1].reason == "not-present"
+
+
+def test_check_real_outage_confirms_in_about_two_waves(tmp_path: Path, monkeypatch):
+    """4 threads: a 1a onda (sondas simultâneas) suspeita, a 2a, 30 s depois, confirma."""
+    import threading
+
+    _clear_env(monkeypatch)
+    clock = _Clock()
+    barrier = threading.Barrier(
+        4, timeout=10, action=lambda: setattr(clock, "now", 40.0)
+    )
+    seen = {"n": 0}
+    lock = threading.Lock()
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        with lock:
+            seen["n"] += 1
+            first_wave = seen["n"] <= 4
+        if first_wave:
+            barrier.wait()  # a onda inteira fica em voo, e o relógio avança 40 s
+        raise httpx2.ConnectError("fora do ar", request=request)
+
+    app, wire = _fail_fast_app(handler)
+    app._clock = clock
+    app.probe_attempts = 1
+    plan = app.check_datasets(_entries(12), tmp_path, workers=4)
+    assert any("confirmada" in i.reason for i in plan.items)
+    assert len(wire.calls) < 12  # parte das entradas nem chegou a sondar
+    assert all(i.reason.startswith("metadata-unavailable") for i in plan.items)
 
 
 def test_check_short_hiccup_does_not_condemn_the_host(tmp_path: Path, monkeypatch):
@@ -390,6 +475,8 @@ def test_check_simultaneous_failures_do_not_confirm(tmp_path: Path, monkeypatch)
 
     app, wire = _fail_fast_app(handler)
     app.probe_attempts = 1
+    ticks = iter(range(0, 10_000, 100))
+    app._clock = lambda: float(next(ticks))  # a regra do tempo sempre cumprida
     plan = app.check_datasets(_entries(8), tmp_path, workers=4)
     reasons = [i.reason for i in plan.items]
     assert sum(r.startswith("metadata-unavailable") for r in reasons) == 4
@@ -401,7 +488,7 @@ def test_check_success_clears_the_suspicion(tmp_path: Path, monkeypatch):
     _clear_env(monkeypatch)
     # e0 falha (2 chamadas), e1 responde (3a), e2 falha (4a, 5a), e3 falha (6a, 7a) e
     # confirma; e4 já cai na guarda. Sem a limpeza, e2 confirmaria e e3 nem sondaria.
-    app, wire = _fail_fast_app(_scripted({1, 2, 4, 5, 6, 7}))
+    app, wire, _ = _clocked_app(_scripted({1, 2, 4, 5, 6, 7}), 15.0)
     plan = app.check_datasets(_entries(5), tmp_path, workers=1)
     assert len(wire.calls) == 7
     assert plan.items[1].reason == "not-present"
@@ -414,12 +501,14 @@ def test_check_memory_does_not_leak_between_calls(tmp_path: Path, monkeypatch):
 
     _clear_env(monkeypatch)
     app, wire = _fail_fast_app(_scripted(set()))
-    app._hosts_check["example.test:"] = _HostCheck(1, "ConnectError", confirmado=True)
+    app._hosts_check["example.test:"] = _HostCheck(
+        1, 0.0, "ConnectError", confirmado=True
+    )
     item = app.check_entry(ENTRY, tmp_path)  # chamada avulsa: zera a memória
     assert item.reason == "not-present"
     assert len(wire.calls) == 1
 
-    app, wire = _fail_fast_app(_connect_error)
+    app, wire, _ = _clocked_app(_connect_error, 15.0)
     app.check_datasets(_entries(4), tmp_path, workers=1)
     assert app._hosts_check == {}
     assert app._em_check_datasets is False
@@ -435,7 +524,9 @@ def test_sync_has_no_host_memory(tmp_path: Path, monkeypatch):
     _clear_env(monkeypatch)
     app, wire = _fail_fast_app(_scripted({1, 2}))
     # Mesmo com o host marcado como caído pelo ``check``, o sync não consulta isso.
-    app._hosts_check["example.test:"] = _HostCheck(1, "ConnectError", confirmado=True)
+    app._hosts_check["example.test:"] = _HostCheck(
+        1, 0.0, "ConnectError", confirmado=True
+    )
     downloaded, total, errors = app.download_datasets(_entries(4), tmp_path, workers=1)
     assert (downloaded, total, len(errors)) == (3, 4, 1)
     assert "fonte inacessível" in errors[0][1]
@@ -536,3 +627,32 @@ def test_failed_head_is_not_repeated_by_the_second_probe(tmp_path: Path, monkeyp
     )
     app.download_entry(ENTRY, tmp_path, dry_run=True)
     assert wire.methods == ["HEAD", "HEAD"]
+
+
+def test_probe_sleep_cap_does_not_reach_the_host_guard(tmp_path: Path, monkeypatch):
+    """O ritmo da política de host fica com o cliente base, não com o teto da sonda."""
+    from quantilica.core.http import HostPolicy
+
+    _clear_env(monkeypatch)
+    slept: list[float] = []
+    base = HttpClient(
+        attempts=2,
+        retry_base_delay=0.0,
+        transport=httpx2.MockTransport(lambda r: httpx2.Response(200)),
+        host_policies={"example.test": HostPolicy(min_interval=3.0)},
+    )
+    base._sleep = slept.append
+    app = make_app(client=base, probe_retry_delay=0.5)
+    probe = app._probe_client()
+    assert probe is not None
+    with probe as client:
+        client.head("https://example.test/a.csv")  # a sonda é a 1a requisição ao host
+    guard = base._host_guards["example.test"]
+    guard._sleep(3.0)
+    assert slept == [3.0]
+    # E o teto continua valendo para a espera entre tentativas da sonda.
+    import time
+
+    start = time.monotonic()
+    probe._sleep(30.0)
+    assert time.monotonic() - start < 5.0

@@ -559,7 +559,8 @@ class _ProbeHttpClient(HttpClient):
 class _HostCheck:
     """Estado de um host na memória do ``check`` (ver ``_registrar_conexao_check``)."""
 
-    suspeita_desde: int
+    suspeita_desde: int  # ordem do registro da primeira falha
+    inicio: float  # relógio em que COMEÇOU a sonda dessa primeira falha
     causa: str
     confirmado: bool = False
 
@@ -573,6 +574,12 @@ def _env_number(name: str, cast_to: Callable[[str], Any]) -> Any:
         return cast_to(raw)
     except ValueError:
         return None
+
+
+def _timeout_of(client: Any) -> float:
+    """Timeout numérico do cliente (0 se não for um número)."""
+    timeout = getattr(client, "timeout", None)
+    return float(timeout) if isinstance(timeout, int | float) else 0.0
 
 
 def _host_key(url: str) -> str:
@@ -707,9 +714,11 @@ class FetcherApp:
             ``metadata-unavailable: fonte inacessível (...)``, e o
             ``sync --from-plan`` seguinte o acusa como erro. No ``check``, o
             host só é dado como fora do ar com confirmação: uma segunda sonda,
-            que começou depois de registrada a primeira falha, também não
-            conecta (sondas simultâneas falham juntas num mesmo soluço e não
-            confirmam); daí em diante, e só naquela execução, as demais
+            que começou depois de registrada a primeira falha e pelo menos o
+            timeout da sonda depois do início da que abriu a suspeita, também
+            não conecta (sondas simultâneas falham juntas num mesmo soluço, e
+            um soluço de DNS de poucos segundos acaba antes do prazo: nenhum
+            dos dois confirma); daí em diante, e só naquela execução, as demais
             entradas do host falham na hora, sem gastar o orçamento. Qualquer
             resposta do host limpa a suspeita. O ``sync`` não guarda memória de
             host: cada arquivo falha por si. Falha de HEAD que não é de conexão
@@ -799,6 +808,7 @@ class FetcherApp:
         self._hosts_check_lock = threading.Lock()
         self._hosts_check_seq = 0
         self._em_check_datasets = False
+        self._clock: Callable[[], float] = time.monotonic
         self.all_group_keys = list(self.groups.keys())
         self.all_keys = self.all_group_keys + list(self.aliases.keys())
         self.resolve_groups = make_resolve_groups(groups_dict, aliases_dict)
@@ -1478,6 +1488,14 @@ class FetcherApp:
             limits=base.limits,
             emulate_browser=True,
         )
+        if base.host_policies:
+            # A guarda do host (ritmo e recuo de 429) é criada na primeira
+            # requisição e fica com o ``_sleep`` do cliente que a criou: crie-a
+            # agora, pelo cliente base, para que o teto da sonda não a alcance.
+            guard_for = getattr(base, "_guard_for", None)
+            if callable(guard_for):
+                for host in base.host_policies:
+                    guard_for(f"https://{host}/")
         if self.probe_retry_delay is not None and hasattr(client, "_sleep"):
             # Um ``Retry-After`` do servidor não pode esticar a espera da sonda
             # além do teto declarado (vale só para este cliente).
@@ -1506,11 +1524,11 @@ class FetcherApp:
         with self._hosts_check_lock:
             self._hosts_check.clear()
 
-    def _hosts_check_ticket(self) -> int:
-        """Número de ordem de uma sonda do ``check`` (cresce a cada início/falha)."""
+    def _hosts_check_ticket(self) -> tuple[int, float]:
+        """Ordem e relógio do INÍCIO de uma sonda do ``check``."""
         with self._hosts_check_lock:
             self._hosts_check_seq += 1
-            return self._hosts_check_seq
+            return self._hosts_check_seq, self._clock()
 
     def _guard_host_check(self, url: str) -> None:
         """Falha na hora se o ``check`` já confirmou o host fora do ar.
@@ -1533,19 +1551,27 @@ class FetcherApp:
             )
 
     def _registrar_conexao_check(
-        self, url: str, ticket: int, failure: BaseException | None
+        self,
+        url: str,
+        ticket: tuple[int, float],
+        failure: BaseException | None,
+        limite: float = 0.0,
     ) -> None:
         """Atualiza a memória de host do ``check`` com o resultado de uma sonda.
 
         A primeira falha de conexão só deixa o host sob suspeita. A queda só é
-        confirmada por uma segunda falha de uma sonda que COMEÇOU depois de a
-        primeira ser registrada (``ticket`` maior): sondas simultâneas falham
-        juntas no mesmo soluço e não confirmam nada. Qualquer resposta do host
+        confirmada por uma segunda falha de uma sonda que COMEÇOU (a) depois de
+        a primeira ser registrada (ordem maior: sondas simultâneas falham juntas
+        no mesmo soluço e não confirmam nada) e (b) pelo menos ``limite``
+        segundos (o timeout da sonda) depois de a sonda que abriu a suspeita ter
+        começado: um ``ConnectError`` pode ser instantâneo (DNS), e um soluço de
+        poucos segundos não pode condenar o host. Qualquer resposta do host
         (inclusive status de erro) limpa o registro.
         """
         if not self.probe_fail_fast_on_connect:
             return
         key = _host_key(url)
+        seq, started = ticket
         with self._hosts_check_lock:
             if failure is None:
                 self._hosts_check.pop(key, None)
@@ -1554,9 +1580,13 @@ class FetcherApp:
             if registro is None:
                 self._hosts_check_seq += 1
                 self._hosts_check[key] = _HostCheck(
-                    suspeita_desde=self._hosts_check_seq, causa=repr(failure)
+                    suspeita_desde=self._hosts_check_seq,
+                    inicio=started,
+                    causa=repr(failure),
                 )
-            elif ticket > registro.suspeita_desde:
+            elif seq > registro.suspeita_desde and (
+                started - registro.inicio >= limite
+            ):
                 registro.confirmado = True
 
     def _sem_conexao(self, url: str, client: Any, failure: BaseException) -> FetchError:
@@ -1975,7 +2005,9 @@ class FetcherApp:
                         exc, FetchError
                     ):
                         failure = _connect_failure(exc)
-                        self._registrar_conexao_check(url, ticket, failure)
+                        self._registrar_conexao_check(
+                            url, ticket, failure, _timeout_of(client)
+                        )
                         if failure is not None:
                             # Fonte possivelmente fora do ar: o item segue como
                             # "download" (o ``sync --from-plan`` o acusa).
